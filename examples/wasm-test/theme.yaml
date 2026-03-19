@@ -1,0 +1,193 @@
+themes:
+  default:
+    inherits: light
+    inheritsDark: dark
+  light:
+    variables:
+      primary: "#3b82f6"
+      secondary: "#10b981"
+      bg: "#ffffff"
+      surface: "#f9fafb"
+      text: "#111827"
+      muted: "#6b7280"
+      border: "#e5e7eb"
+    selectors:
+      body:
+        fontFamily: "system-ui"
+        padding: "24px"
+        maxWidth: "1200px"
+        margin: "0 auto"
+        backgroundColor: "var(bg)"
+      h1:
+        marginBottom: "8px"
+      "span, button, h1, h2, h3, h4, h5, h6, p":
+        color: "var(text)"
+      ".bg-primary":
+        backgroundColor: "var(primary)"
+      ".bg-secondary":
+        backgroundColor: "var(secondary)"
+      ".bg-surface":
+        backgroundColor: "var(surface)"
+      ".bg-white":
+        backgroundColor: "#ffffff"
+      ".bg-gray-100":
+        backgroundColor: "#f3f4f6"
+      ".bg-blue-600":
+        backgroundColor: "#2563eb"
+      ".text-white":
+        color: "#ffffff"
+      ".text-primary":
+        color: "var(primary)"
+      ".text-themed":
+        color: "var(muted)"
+      ".text-muted":
+        color: "var(muted)"
+      ".text-gray-500":
+        color: "#6b7280"
+      ".text-lg":
+        fontSize: "1.125rem"
+      ".text-2xl":
+        fontSize: "1.5rem"
+      ".text-xs":
+        fontSize: "0.75rem"
+      ".text-sm":
+        fontSize: "0.875rem"
+      ".font-semibold":
+        fontWeight: 600
+      ".font-bold":
+        fontWeight: 600
+      ".p-4":
+        padding: "1rem"
+      ".p-3":
+        padding: "0.75rem"
+      ".p-2":
+        padding: "0.5rem"
+      ".px-3":
+        paddingLeft: "0.75rem"
+        paddingRight: "0.75rem"
+      ".py-1":
+        paddingTop: "0.25rem"
+        paddingBottom: "0.25rem"
+      ".mb-2":
+        marginBottom: "0.5rem"
+      ".mb-6":
+        marginBottom: "1.5rem"
+      ".mb-4":
+        marginBottom: "1rem"
+      ".mr-2":
+        marginRight: "0.5rem"
+      ".m-1":
+        margin: "0.25rem"
+      ".mt-4":
+        marginTop: "1rem"
+      ".rounded":
+        borderRadius: "0.375rem"
+      ".rounded-lg":
+        borderRadius: "0.5rem"
+      ".theme-toggle":
+        display: "flex"
+        gap: "0.5rem"
+        marginBottom: "1rem"
+      ".theme-toggle-btn":
+        padding: "0.375rem 0.75rem"
+        borderRadius: "0.375rem"
+        border: "1px solid var(border)"
+        backgroundColor: "var(surface)"
+        color: "var(text)"
+        cursor: "pointer"
+        fontSize: "0.875rem"
+      ".theme-toggle-btn:hover":
+        backgroundColor: "var(primary)"
+        color: "#ffffff"
+      ".flex":
+        display: "flex"
+      ".flex-row":
+        flexDirection: "row"
+      ".flex-col":
+        flexDirection: "column"
+      ".flex-1":
+        flex: 1
+      ".gap-2":
+        gap: "0.5rem"
+      ".gap-4":
+        gap: "1rem"
+      ".w-full":
+        width: "100%"
+      ".w-fit":
+        width: "fit-content"
+      ".h-auto":
+        height: "auto"
+      ".h-fit":
+        height: "fit-content"
+      ".border":
+        borderWidth: "1px"
+        borderStyle: "solid"
+      ".border-themed":
+        borderColor: "var(border)"
+        borderWidth: 1
+      ".opacity-80":
+        opacity: 0.8
+      ".space-y-2 > * + *":
+        marginTop: "0.5rem"
+      ".error":
+        color: "#c00"
+      pre:
+        fontSize: "11px"
+        overflowX: "auto"
+        maxHeight: "200px"
+        backgroundColor: "#f5f5f5"
+        padding: "8px"
+        borderRadius: "4px"
+      ".test-section":
+        marginBottom: "28px"
+        padding: "20px"
+        borderWidth: "1px"
+        borderStyle: "solid"
+        borderColor: "var(border)"
+        borderRadius: "12px"
+        backgroundColor: "var(surface)"
+        boxShadow: "0 1px 3px rgba(0,0,0,0.06)"
+      ".test-header":
+        fontSize: "1.125rem"
+        fontWeight: 600
+        marginBottom: "14px"
+        color: "var(text)"
+        letterSpacing: "-0.02em"
+      ".test-output":
+        padding: "18px"
+        borderWidth: "1px"
+        borderStyle: "solid"
+        borderColor: "var(border)"
+        borderRadius: "10px"
+        backgroundColor: "var(bg)"
+        minHeight: "60px"
+      ".test-json":
+        marginTop: "12px"
+      ".json-toggle":
+        fontSize: "0.875rem"
+        color: "#666"
+        cursor: "pointer"
+        userSelect: "none"
+        marginTop: "8px"
+      ".json-toggle:hover":
+        color: "#333"
+      ".json-content":
+        display: "none"
+      ".json-content.visible":
+        display: "block"
+  dark:
+    inherits: light
+    variables:
+      bg: "#111827"
+      surface: "#1f2937"
+      text: "#f9fafb"
+      muted: "#9ca3af"
+      primary: "#60a5fa"
+      border: "#374151"
+    selectors:
+      ".theme-toggle-btn":
+        borderColor: "var(border)"
+        backgroundColor: "var(surface)"
+        color: "var(text)"
+      ".test-section":
+        boxShadow: "0 1px 3px rgba(0,0,0,0.2)"
