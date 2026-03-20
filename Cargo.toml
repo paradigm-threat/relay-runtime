@@ -31,6 +31,8 @@ serde_json = "1"
 serde_yaml = "0.9"
 console_error_panic_hook = { version = "0.1", optional = true }
 wasm-bindgen = "0.2"
+web-sys = { version = "0.3", features = ["Window"] }
+js-sys = "0.3"
 # Theme styling (built into relay-runtime - no separate build step)
 themed-styler = { path = "../themed-styler", features = ["wasm"] }
 

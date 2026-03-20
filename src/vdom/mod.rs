@@ -34,12 +34,23 @@ pub enum PropValue {
     Bool(bool),
     /// Event handler or callback ref (host resolves)
     Handler,
+    /// Handler registered by ID; host calls invoke_handler(id). Serializes as {"type": "HandlerId", "value": id}.
+    HandlerId(u32),
     /// Style object
     Style(HashMap<String, String>),
 }
 
 /// Convert runtime Value (JSX output) to VNode.
 pub fn value_to_vnode(v: &Value) -> VNode {
+    value_to_vnode_with_handlers(v, &mut |_| 0)
+}
+
+/// Convert runtime Value to VNode, registering handlers and replacing with HandlerId.
+/// `register` is called for each Function/Setter prop; return value becomes the handler ID.
+pub fn value_to_vnode_with_handlers<F>(v: &Value, register: &mut F) -> VNode
+where
+    F: FnMut(&Value) -> u32,
+{
     match v {
         Value::Object(obj) => {
             let type_ = obj.get("type").and_then(|t| {
@@ -62,12 +73,12 @@ pub fn value_to_vnode(v: &Value) -> VNode {
                     .unwrap_or_else(|| "div".to_string());
                 let default_props = Value::Object(Default::default());
                 let props_val = obj.get("props").unwrap_or(&default_props);
-                let props = value_props_to_map(props_val);
+                let props = value_props_to_map_with_handlers(props_val, register);
                 let children = obj
                     .get("children")
                     .and_then(|c| {
                         if let Value::Array(arr) = c {
-                            Some(arr.iter().map(value_to_vnode).collect())
+                            Some(arr.iter().map(|c| value_to_vnode_with_handlers(c, register)).collect())
                         } else {
                             None
                         }
@@ -97,28 +108,35 @@ pub fn value_to_vnode(v: &Value) -> VNode {
             if arr.is_empty() {
                 VNode::Empty
             } else if arr.len() == 1 {
-                value_to_vnode(&arr[0])
+                value_to_vnode_with_handlers(&arr[0], register)
             } else {
                 VNode::Element {
                     tag: "fragment".to_string(),
                     props: HashMap::new(),
-                    children: arr.iter().map(value_to_vnode).collect(),
+                    children: arr.iter().map(|c| value_to_vnode_with_handlers(c, register)).collect(),
                     key: None,
                 }
             }
         }
         Value::Null => VNode::Empty,
-        Value::Bool(false) => VNode::Empty,
-        Value::Number(n) if *n == 0.0 => VNode::Empty,
+        Value::Bool(b) => VNode::Text(if *b { "true" } else { "false" }.to_string()),
+        Value::Number(n) => VNode::Text(n.to_string()),
         _ => VNode::Empty,
     }
 }
 
 fn value_props_to_map(v: &Value) -> HashMap<String, PropValue> {
+    value_props_to_map_with_handlers(v, &mut |_| 0)
+}
+
+fn value_props_to_map_with_handlers<F>(v: &Value, register: &mut F) -> HashMap<String, PropValue>
+where
+    F: FnMut(&Value) -> u32,
+{
     let mut out = HashMap::new();
     if let Value::Object(obj) = v {
         for (k, v) in obj {
-            if let Some(pv) = value_to_prop(v) {
+            if let Some(pv) = value_to_prop_with_handlers(v, register) {
                 out.insert(k.clone(), pv);
             }
         }
@@ -127,6 +145,13 @@ fn value_props_to_map(v: &Value) -> HashMap<String, PropValue> {
 }
 
 fn value_to_prop(v: &Value) -> Option<PropValue> {
+    value_to_prop_with_handlers(v, &mut |_| 0)
+}
+
+fn value_to_prop_with_handlers<F>(v: &Value, register: &mut F) -> Option<PropValue>
+where
+    F: FnMut(&Value) -> u32,
+{
     match v {
         Value::String(s) => Some(PropValue::String(s.clone())),
         Value::Number(n) => Some(PropValue::Number(*n)),
@@ -154,7 +179,14 @@ fn value_to_prop(v: &Value) -> Option<PropValue> {
                 None
             }
         }
-        Value::Function { .. } | Value::Native(_) | Value::Setter(_) => Some(PropValue::Handler),
+        Value::Function { .. } | Value::Native(_) | Value::Setter(_) => {
+            let id = register(v);
+            if id == 0 {
+                Some(PropValue::Handler)
+            } else {
+                Some(PropValue::HandlerId(id))
+            }
+        }
         _ => None,
     }
 }
@@ -192,6 +224,17 @@ impl VNode {
             VNode::Element { children, .. } => 1 + children.iter().map(VNode::node_count).sum::<usize>(),
             VNode::Text(_) => 1,
             VNode::Empty => 0,
+        }
+    }
+
+    /// Collect all text content (for tests). Concatenates Text nodes in tree order.
+    pub fn text_content(&self) -> String {
+        match self {
+            VNode::Element { children, .. } => {
+                children.iter().map(VNode::text_content).collect::<Vec<_>>().join("")
+            }
+            VNode::Text(s) => s.clone(),
+            VNode::Empty => String::new(),
         }
     }
 }

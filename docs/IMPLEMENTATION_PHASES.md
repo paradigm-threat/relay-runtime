@@ -141,7 +141,7 @@ If a feature is not clearly used in relay-template, **ask** before implementing.
 ### 3.1 State
 - Component instance → fiber-like structure
 - Hook slots per component instance
-- setState triggers re-render
+- setState triggers re-render — **not yet wired**; see [PLAN.md](PLAN.md) §5 (phases A→C→B→D→E, TDD, incremental DOM)
 
 ### 3.2 Unit Tests (Phase 3)
 
@@ -197,7 +197,7 @@ If a feature is not clearly used in relay-template, **ask** before implementing.
 **Shared:**
 - Map element tree to host nodes
 - Apply className, style (via themed-styler output), event handlers
-- Reconcile on updates (apply `vdom::reconcile::patches` or full replace)
+- Reconcile on updates: **incremental DOM** — apply `vdom::reconcile::patches`; extend Patch for SetText, SetProp (see [PLAN.md](PLAN.md) §5 Phase E)
 
 ### 5.2 Native Renderer (Android)
 - Map to native view hierarchy

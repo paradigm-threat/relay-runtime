@@ -51,7 +51,7 @@ CleverScript is the JS-like language executed by **relay-runtime** for client ho
 ### 1.7 Imports
 
 - `import x from 'source'` — default imports from host modules
-- Host provides: theme, styler, relayRuntime, etc.
+- Host provides: theme, styler, relayRuntime (getThemes, postMessage, getPendingMessages), etc.
 
 ### 1.8 React Hooks
 
@@ -125,6 +125,13 @@ CleverScript is the JS-like language executed by **relay-runtime** for client ho
 - **Heavy APIs from host:** theme, styler, relayRuntime, fetch, etc.
 - **JSON in, JSON out:** theme/config as JSON; vnodes as JSON
 - **Fail fast:** unsupported syntax or runtime error → clear error, no silent fallback
+
+### 3.1 Host messaging (postMessage)
+
+Hooks can interact with the host via `window.postMessage` and `addEventListener("message", ...)`:
+
+- **`relayRuntime.postMessage(payload)`** — sends a message to the host. Payload is wrapped as `{ type: "relay-runtime", payload }`. Host receives via `window.addEventListener("message", (e) => { ... })`.
+- **`relayRuntime.getPendingMessages()`** — returns an array of messages pushed from the host (e.g. from parent iframe, other tabs). The bootstrap adds a message listener that forwards incoming messages (excluding relay-runtime’s own) into this queue.
 
 ---
 

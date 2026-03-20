@@ -323,6 +323,9 @@ impl<'a> Lexer<'a> {
                     } else {
                         Token::EqEq
                     }
+                } else if self.peek() == Some(&'>') {
+                    self.advance();
+                    Token::Arrow
                 } else {
                     Token::Eq
                 }
@@ -373,10 +376,7 @@ impl<'a> Lexer<'a> {
                 }
             }
             '-' => {
-                if self.peek() == Some(&'>') {
-                    self.advance();
-                    Token::Arrow
-                } else if self.peek() == Some(&'-') {
+                if self.peek() == Some(&'-') {
                     self.advance();
                     Token::Decr
                 } else {

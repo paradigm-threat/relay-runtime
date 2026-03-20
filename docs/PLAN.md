@@ -93,9 +93,54 @@ The same idea for **client hooks**: a **UI/component language** that is **JS-lik
 
 ---
 
-## 5. References
+## 5. Re-render on state change (React-like)
+
+**Goal:** When a hook calls `setState(newValue)`, the component tree re-runs and the host applies the updated VNode.
+
+**Current state:** `useState` works for the initial render. State is stored in `ComponentInstance` hook slots. The setter updates the cell. But no re-run is triggered, so the UI stays static.
+
+**Constraints:** One hook per app (SPA; entry path from YAML). Incremental DOM updates from the start (no full replace). TDD: unit tests before browser testing.
+
+### 5.1 Architecture gap
+
+```
+Host calls run_hook_with_host() → Runtime runs once → returns VNode → host applies → done.
+```
+
+**Missing:** When the user clicks (onClick) and the handler calls `setter(newValue)`, we need to re-run and re-render. Today: handlers are not wired; Runtime is dropped after each call.
+
+### 5.2 Implementation phases (ordered)
+
+| Phase | Description | Difficulty |
+|-------|-------------|------------|
+| **A** | Persist `RunState` (default_instance, loaded_instances by module path) across `run_hook_with_host` calls | Medium |
+| **C** | Handler registry, handler IDs in VNode, `invoke_handler(id)` export, host attaches onclick | Medium–high |
+| **B** | Setter sets `RENDER_REQUESTED`; add `consume_render_requested()` WASM export | Low |
+| **D** | Bootstrap loop: re-run when `consume_render_requested()`; apply patches incrementally | Low |
+| **E** | Incremental DOM: extend `Patch` (SetText, SetProp, etc.), host `applyPatches(dom, patches)` | Medium |
+
+**Flow:** Initial render → user clicks → host calls `invoke_handler(id)` → WASM runs callback → setter updates state + sets flag → host calls `run_hook_with_host` again → new VNode → host applies patches (incremental) to DOM.
+
+**Handler ID (recommended):** In VNode props, use `onClick: { type: "Handler", id: 123 }`. Host: when building DOM, if prop is Handler, attach `element.onclick = () => invoke_handler(id)` and omit from attributes. Keeps serialization clean; host explicitly wires events.
+
+### 5.3 TDD: tests before implementation
+
+| Phase | Tests to add first |
+|-------|--------------------|
+| **A** | `tests/run_state_persistence.rs`: call `run_hook_with_host` twice (native API equivalent), assert second run reuses state; extend `runtime_hooks` for WASM path |
+| **C** | `tests/handler_registry.rs`: element with `onClick={fn}` → VNode has `Handler` prop with id; `invoke_handler(id)` runs callback |
+| **B** | `tests/render_requested.rs`: setter call sets flag; `consume_render_requested()` returns true then false |
+| **D** | `tests/bootstrap_loop.rs`: mock host, run → click → run again, assert updated output |
+| **E** | `tests/patches.rs`: extend `vdom/reconcile` tests; `applyPatches` in host (or Rust test with mock DOM) |
+
+**Order:** Write failing tests for Phase A → implement A → green. Repeat for C, B, D, E.
+
+---
+
+## 6. References
 
 - **[POLICY.md](POLICY.md)** — no legacy, no hook transpile, themed-styler separate.
 - **[NEXT_STEPS.md](NEXT_STEPS.md)** — ordered implementation and client teardown.
+- **[IMPLEMENTATION_PHASES.md](IMPLEMENTATION_PHASES.md)** — phases, tests, re-render (Phase 3.1).
 - **[WEB_WASM_HOST.md](WEB_WASM_HOST.md)** — web: WASM core; host JS glue only.
 - **themed-styler**, **relay-client-android**, **relay-client-web**, **relay-server**, **Songwalker Core**.

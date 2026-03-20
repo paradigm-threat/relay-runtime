@@ -16,6 +16,9 @@ import init, {
   get_injected_css,
   get_themes,
   set_theme_and_render,
+  push_message_from_host,
+  invoke_handler,
+  consume_render_requested,
 } from './relay_runtime.js';
 
 let _styleId = 'themed-styler-output';
@@ -25,9 +28,11 @@ let _styleId = 'themed-styler-output';
  * Handles Element (VNode format), type: "element" (Value format), Text, and arrays.
  *
  * @param {object} v - VNode or Value
+ * @param {function(number): void} [invokeHandler] - Called for Handler props (onClick, etc.). Default: invoke_handler from WASM.
+ * @param {function(): void} [onAfterInvoke] - Called after each handler; if consume_render_requested(), should re-run and re-apply.
  * @returns {DocumentFragment|HTMLElement|Text|null}
  */
-export function vnodeToDom(v) {
+export function vnodeToDom(v, invokeHandler = invoke_handler, onAfterInvoke = null) {
   if (!v) return null;
   if (v.Empty !== undefined) return null; // VNode::Empty
   if (v.Text !== undefined) return document.createTextNode(v.Text);
@@ -36,14 +41,28 @@ export function vnodeToDom(v) {
     if (tag === 'fragment') {
       const frag = document.createDocumentFragment();
       for (const c of children || []) {
-        const child = vnodeToDom(c);
+        const child = vnodeToDom(c, invokeHandler, onAfterInvoke);
         if (child) frag.appendChild(child);
       }
       return frag;
     }
     const el = document.createElement(tag);
-        if (props) {
+    if (props) {
       for (const [k, val] of Object.entries(props)) {
+        if (val && typeof val === 'object' && (val.type === 'Handler' || val.type === 'HandlerId') && typeof val.value === 'number') {
+          const eventType = k.startsWith('on') ? k.slice(2).toLowerCase() : k;
+          const handlerId = val.value;
+          el.addEventListener(eventType, () => {
+            try {
+              invokeHandler(handlerId);
+            } catch (e) {
+              console.error('[relay-runtime] Handler invocation failed:', e);
+              throw e;
+            }
+            if (onAfterInvoke && consume_render_requested()) onAfterInvoke();
+          });
+          continue;
+        }
         const str =
           val && typeof val === 'object' && val.type === 'String' && val.value !== undefined
             ? val.value
@@ -61,7 +80,7 @@ export function vnodeToDom(v) {
     }
     if (children && Array.isArray(children)) {
       for (const c of children) {
-        const child = vnodeToDom(c);
+        const child = vnodeToDom(c, invokeHandler, onAfterInvoke);
         if (child) el.appendChild(child);
       }
     }
@@ -71,6 +90,19 @@ export function vnodeToDom(v) {
     const el = document.createElement(v.tag === 'fragment' ? 'div' : v.tag);
     if (v.props) {
       for (const [k, val] of Object.entries(v.props)) {
+        if (val && typeof val === 'object' && (val.type === 'Handler' || val.type === 'HandlerId') && typeof val.value === 'number') {
+          const eventType = k.startsWith('on') ? k.slice(2).toLowerCase() : k;
+          el.addEventListener(eventType, () => {
+            try {
+              invokeHandler(val.value);
+            } catch (e) {
+              console.error('[relay-runtime] Handler invocation failed:', e);
+              throw e;
+            }
+            if (onAfterInvoke && consume_render_requested()) onAfterInvoke();
+          });
+          continue;
+        }
         const str =
           val && typeof val === 'object' && val.type === 'String' && val.value !== undefined
             ? val.value
@@ -88,7 +120,7 @@ export function vnodeToDom(v) {
     }
     if (v.children && Array.isArray(v.children)) {
       for (const c of v.children) {
-        const child = vnodeToDom(c);
+        const child = vnodeToDom(c, invokeHandler, onAfterInvoke);
         if (child) el.appendChild(child);
       }
     }
@@ -97,7 +129,7 @@ export function vnodeToDom(v) {
   if (Array.isArray(v)) {
     const frag = document.createDocumentFragment();
     for (const c of v) {
-      const child = vnodeToDom(c);
+      const child = vnodeToDom(c, invokeHandler, onAfterInvoke);
       if (child) frag.appendChild(child);
     }
     return frag;
@@ -170,6 +202,19 @@ export async function bootstrap(options = {}) {
     await init(wasmUrl);
     _styleId = styleId;
 
+    // Forward window messages to relay-runtime so hooks can call getPendingMessages().
+    // Skip messages with type "relay-runtime" (sent by postMessage) to avoid echo.
+    if (typeof window !== 'undefined') {
+      window.addEventListener('message', (e) => {
+        try {
+          const d = e.data;
+          if (d && typeof d === 'object' && d.type === 'relay-runtime') return;
+          const payload = typeof d === 'string' ? d : JSON.stringify(d ?? null);
+          push_message_from_host(payload);
+        } catch (_) { /* ignore */ }
+      });
+    }
+
     const themeUrl = resolveUrl(baseUrl, themePath);
     const hooksUrl = resolveUrl(baseUrl, hooksPath);
     const appUrl = resolveUrl(baseUrl, appPath);
@@ -226,37 +271,51 @@ export async function bootstrap(options = {}) {
       });
     }
 
-    const vnodeJson = run_hook_with_host(
-      appSource,
-      JSON.stringify(moduleMap),
-      themeYaml,
-      JSON.stringify(manifest),
-      appPath || ''
-    );
-
-    const css = get_injected_css();
-    const styleEl = document.getElementById(styleId);
-    if (styleEl) styleEl.textContent = css;
-
-    root.innerHTML = '';
-    const vnode = JSON.parse(vnodeJson);
-    const el = vnodeToDom(vnode);
-    if (el) {
-      root.appendChild(el);
-    } else {
-      const empty = document.createElement('p');
-      empty.className = 'relay-empty';
-      empty.textContent = 'Rendered (no content). Check that hooks manifest and theme are loaded.';
-      root.appendChild(empty);
-      if (typeof console !== 'undefined' && console.debug) {
-        console.debug('[relay-runtime] vnode was empty:', vnode);
+    const doRender = () => {
+      try {
+        let vnodeJson;
+        try {
+          vnodeJson = run_hook_with_host(
+            appSource,
+            JSON.stringify(moduleMap),
+            themeYaml,
+            JSON.stringify(manifest),
+            appPath || ''
+          );
+        } catch (e) {
+          console.error('[relay-runtime] run_hook_with_host failed:', e);
+          throw e;
+        }
+        const css = get_injected_css();
+        const styleEl = document.getElementById(styleId);
+        if (styleEl) styleEl.textContent = css;
+        root.innerHTML = '';
+        const vnode = JSON.parse(vnodeJson);
+        const el = vnodeToDom(vnode, invoke_handler, doRender);
+        if (el) {
+          root.appendChild(el);
+        } else {
+          const empty = document.createElement('p');
+          empty.className = 'relay-empty';
+          empty.textContent = 'Rendered (no content). Check that hooks manifest and theme are loaded.';
+          root.appendChild(empty);
+          if (typeof console !== 'undefined' && console.debug) {
+            console.debug('[relay-runtime] vnode was empty:', vnode);
+          }
+        }
+      } catch (e) {
+        console.error('[relay-runtime] doRender failed:', e);
+        throw e;
       }
-    }
+    };
+    doRender();
 
-    // Event delegation for theme toggle (buttons with dataTheme -> data-theme)
+    // Event delegation: theme toggle (data-theme)
     root.addEventListener('click', (e) => {
       const theme = e.target?.dataset?.theme;
-      if (theme) setCurrentTheme(theme);
+      if (theme) {
+        setCurrentTheme(theme);
+      }
     });
   } catch (e) {
     root.textContent = '';

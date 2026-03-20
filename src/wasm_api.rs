@@ -6,16 +6,21 @@
 #![cfg(target_arch = "wasm32")]
 
 use crate::host::{Host, HostHandle, ModuleMapHost};
+use crate::run_state;
+use crate::runtime::Runtime;
 use crate::value::Value;
 use crate::vdom::collect_usage_from_vnode_json;
+use crate::vdom::value_to_vnode_with_handlers;
 use crate::error::RuntimeError;
-use crate::{analyze, parse_with_path, runtime::Runtime, value_to_vnode};
+use crate::{analyze, parse_with_path, value_to_vnode};
+use js_sys::JSON;
 use serde_json;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use wasm_bindgen::prelude::*;
+use web_sys::window;
 
 thread_local! {
     static INJECTED_CSS: RefCell<String> = RefCell::new(String::new());
@@ -23,6 +28,8 @@ thread_local! {
     static LAST_STATE: RefCell<String> = RefCell::new(String::new());
     /// Last run_hook timestamp (ms) for frequent re-run detection.
     static LAST_RUN_MS: RefCell<f64> = RefCell::new(0.0);
+    /// Messages pushed from host via push_message_from_host. Consumed by getPendingMessages.
+    static MESSAGE_QUEUE: RefCell<Vec<String>> = RefCell::new(Vec::new());
 }
 
 #[wasm_bindgen]
@@ -150,15 +157,16 @@ pub fn run_hook_with_host(
     check_frequent_rerun();
     INJECTED_CSS.with(|c| *c.borrow_mut() = String::new());
 
-    let program = parse_with_path(source, if file.is_empty() { None::<String> } else { Some(file.to_string()) })
-        .map_err(runtime_error_to_js)?;
-    let analysis = analyze(&program).map_err(|e| {
-        let msg = format!("[relay-runtime] Analysis error: {}", e);
-        log_error(&msg);
-        JsValue::from_str(&msg)
-    })?;
-
-    let default_name = analysis.default_export.as_deref().unwrap_or("<default>");
+    let default_name = {
+        let program = parse_with_path(source, if file.is_empty() { None::<String> } else { Some(file.to_string()) })
+            .map_err(runtime_error_to_js)?;
+        let analysis = analyze(&program).map_err(|e| {
+            let msg = format!("[relay-runtime] Analysis error: {}", e);
+            log_error(&msg);
+            JsValue::from_str(&msg)
+        })?;
+        analysis.default_export.as_deref().unwrap_or("<default>").to_string()
+    };
     log_verbose(&format!("[relay-runtime] run_hook_with_host: {}", default_name));
 
     let modules: HashMap<String, String> = serde_json::from_str(module_map_json)
@@ -189,13 +197,12 @@ pub fn run_hook_with_host(
     }));
     inner.borrow().set_parent_host(wasm_host.clone());
 
-    let mut runtime = Runtime::new(program, analysis).with_host(wasm_host);
-    let result = runtime.run().map_err(|e| {
+    let result = run_state::run_hook_persistent(source, wasm_host).map_err(|e| {
         let msg = format!("[relay-runtime] Runtime error: {}", e);
         log_error(&msg);
         JsValue::from_str(&msg)
     })?;
-    let vnode = value_to_vnode(&result).normalize();
+    let vnode = value_to_vnode_with_handlers(&result, &mut |v| run_state::register_handler(v)).normalize();
 
     // Debug: when result normalizes to Empty, log what we got to help diagnose
     if matches!(vnode, crate::vdom::VNode::Empty) {
@@ -249,6 +256,65 @@ pub fn get_themes() -> String {
             get_theme_list_json(state.as_str())
         }
     })
+}
+
+fn do_post_message_to_host(payload_json: &str) -> Result<(), String> {
+    let window = window().ok_or_else(|| "no window".to_string())?;
+    let payload: JsValue = JSON::parse(payload_json).unwrap_or_else(|_| JsValue::from_str(payload_json));
+    let envelope = js_sys::Object::new();
+    let _ = js_sys::Reflect::set(&envelope, &JsValue::from_str("type"), &JsValue::from_str("relay-runtime"));
+    let _ = js_sys::Reflect::set(&envelope, &JsValue::from_str("payload"), &payload);
+    window.post_message(&envelope.into(), "*").map_err(|e| format!("postMessage failed: {:?}", e))
+}
+
+/// Post a message to the host via window.postMessage. Host receives via addEventListener("message", ...).
+/// Payload is wrapped as { type: "relay-runtime", payload } so host can filter.
+#[wasm_bindgen]
+pub fn post_message_to_host(payload_json: &str) -> Result<(), JsValue> {
+    do_post_message_to_host(payload_json).map_err(|e| JsValue::from_str(&e))
+}
+
+/// Push a message from host into the runtime queue. Call from host's message handler when forwarding.
+/// Returns JSON array of pending messages and clears the queue.
+#[wasm_bindgen]
+pub fn push_message_from_host(payload_json: &str) {
+    MESSAGE_QUEUE.with(|q| q.borrow_mut().push(payload_json.to_string()));
+}
+
+fn get_pending_messages_inner() -> String {
+    MESSAGE_QUEUE.with(|q| {
+        let mut queue = q.borrow_mut();
+        let arr: Vec<serde_json::Value> = queue
+            .drain(..)
+            .map(|s| serde_json::from_str(&s).unwrap_or(serde_json::Value::String(s)))
+            .collect();
+        serde_json::to_string(&arr).unwrap_or_else(|_| "[]".to_string())
+    })
+}
+
+/// Get pending messages from host (pushed via push_message_from_host) and clear the queue.
+/// Returns JSON array of message payloads (parsed when valid JSON, else as string).
+#[wasm_bindgen]
+pub fn get_pending_messages() -> String {
+    get_pending_messages_inner()
+}
+
+/// Invoke a handler by ID (from VNode props with type "Handler"). Used when the host
+/// receives a click or other event and needs to run the callback (e.g. onClick).
+#[wasm_bindgen]
+pub fn invoke_handler(handler_id: u32) -> Result<(), JsValue> {
+    run_state::invoke_handler(handler_id).map_err(|e| {
+        let msg = format!("[relay-runtime] invoke_handler error: {}", e);
+        log_error(&msg);
+        JsValue::from_str(&msg)
+    })?;
+    Ok(())
+}
+
+/// Returns true if a setter ran since last run (host should re-run and re-render), and clears the flag.
+#[wasm_bindgen]
+pub fn consume_render_requested() -> bool {
+    run_state::consume_render_requested()
 }
 
 /// Set current theme and return new CSS. Updates LAST_STATE and INJECTED_CSS.
@@ -576,7 +642,7 @@ fn react_module() -> Value {
     Value::Object(obj)
 }
 
-/// Module for @clevertree/relay-runtime: getThemes (for theme toggle in hooks).
+/// Module for @clevertree/relay-runtime: getThemes, postMessage, getPendingMessages.
 fn relay_runtime_module() -> Value {
     let mut obj = HashMap::new();
     obj.insert(
@@ -584,6 +650,21 @@ fn relay_runtime_module() -> Value {
         Value::Native(|_args: &[Value]| {
             let list = get_themes();
             Ok(Value::String(list))
+        }),
+    );
+    obj.insert(
+        "postMessage".to_string(),
+        Value::Native(|args: &[Value]| {
+            let payload = args.first().map(|v| value_to_json_string(v)).unwrap_or(Ok("null".to_string()))?;
+            do_post_message_to_host(&payload).map(|_| Value::Null)
+        }),
+    );
+    obj.insert(
+        "getPendingMessages".to_string(),
+        Value::Native(|_args: &[Value]| {
+            let json = get_pending_messages_inner();
+            let v: serde_json::Value = serde_json::from_str(&json).unwrap_or(serde_json::Value::Array(vec![]));
+            Ok(Value::from_json(&v))
         }),
     );
     Value::Object(obj)

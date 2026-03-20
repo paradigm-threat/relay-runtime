@@ -262,6 +262,21 @@ impl Runtime {
                     self.eval_expr(alternate)
                 }
             }
+            Expr::ArrowFunction { params, body } => {
+                let body = match body {
+                    ArrowBody::Block(stmts) => stmts.clone(),
+                    ArrowBody::Expr(expr) => vec![Statement::Return {
+                        argument: Some(expr.clone()),
+                    }],
+                };
+                Ok(Value::Function {
+                    params: params.clone(),
+                    body,
+                    env: self.env.clone(),
+                    is_async: false,
+                    component_hooks: None,
+                })
+            }
             Expr::JsxElement(el) => self.eval_jsx_element(el),
             Expr::JsxFragment { children } => {
                 let mut vals = Vec::new();
@@ -507,6 +522,7 @@ impl Runtime {
             Value::Setter(cell) => {
                 let new_val = args.first().cloned().unwrap_or(Value::Null);
                 *cell.borrow_mut() = new_val;
+                crate::run_state::set_render_requested();
                 Ok(Value::Null)
             }
             Value::Native(native) => native(args).map_err(RuntimeError::Runtime),

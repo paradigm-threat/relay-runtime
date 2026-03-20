@@ -60,6 +60,14 @@ impl<'a> TokenStream<'a> {
         matches!(self.peek(), Token::Eof)
     }
 
+    fn save_pos(&self) -> usize {
+        self.pos
+    }
+
+    fn restore_pos(&mut self, pos: usize) {
+        self.pos = pos;
+    }
+
     fn parse_error(&self, message: impl Into<String>) -> RuntimeError {
         let offset = self.peek_start();
         let (line, col) = line_col_for_offset(self.source, offset);
@@ -437,6 +445,31 @@ fn parse_params(stream: &mut TokenStream) -> Result<Vec<Param>, RuntimeError> {
         }
     }
     Ok(params)
+}
+
+/// Parse arrow function params: ident (',' ident)* ')' — consumes up to and including ')'.
+fn parse_arrow_params(stream: &mut TokenStream) -> Result<Vec<Param>, RuntimeError> {
+    let mut params = Vec::new();
+    loop {
+        let name = expect_ident(stream)?;
+        params.push(Param { name, rest: false });
+        if eat_token(stream, Token::RParen) {
+            break;
+        }
+        expect_token(stream, Token::Comma)?;
+    }
+    Ok(params)
+}
+
+fn parse_arrow_body(stream: &mut TokenStream) -> Result<ArrowBody, RuntimeError> {
+    if eat_token(stream, Token::LCurly) {
+        let body = parse_block(stream)?;
+        expect_token(stream, Token::RCurly)?;
+        Ok(ArrowBody::Block(body))
+    } else {
+        let expr = parse_expression(stream)?;
+        Ok(ArrowBody::Expr(Box::new(expr)))
+    }
 }
 
 fn parse_block(stream: &mut TokenStream) -> Result<Vec<Statement>, RuntimeError> {
@@ -846,6 +879,30 @@ fn parse_primary(stream: &mut TokenStream) -> Result<Expr, RuntimeError> {
         }
         Token::LParen => {
             stream.next();
+            // Try arrow function: () => or (params) =>
+            if stream.peek() == &Token::RParen {
+                stream.next();
+                if stream.peek() == &Token::Arrow {
+                    stream.next();
+                    let body = parse_arrow_body(stream)?;
+                    return Ok(Expr::ArrowFunction {
+                        params: Vec::new(),
+                        body,
+                    });
+                }
+                return Err(stream.parse_error("Empty () not valid here; use () => expr for arrow function".to_string()));
+            }
+            if matches!(stream.peek(), Token::Ident(_)) {
+                let saved = stream.save_pos();
+                if let Ok(params) = parse_arrow_params(stream) {
+                    if stream.peek() == &Token::Arrow {
+                        stream.next();
+                        let body = parse_arrow_body(stream)?;
+                        return Ok(Expr::ArrowFunction { params, body });
+                    }
+                }
+                stream.restore_pos(saved);
+            }
             let expr = parse_expression(stream)?;
             expect_token(stream, Token::RParen)?;
             Ok(expr)
@@ -1047,7 +1104,71 @@ fn parse_jsx_children(
             Token::Ident(ref s) => {
                 let s = s.clone();
                 stream.next();
-                children.push(JsxChild::Text(s));
+                let space = matches!(stream.peek(), Token::LCurly | Token::Ident(_));
+                children.push(JsxChild::Text(if space { format!("{} ", s) } else { s }));
+            }
+            Token::Colon => {
+                stream.next();
+                let space = matches!(stream.peek(), Token::LCurly | Token::Ident(_));
+                children.push(JsxChild::Text(if space { ": ".to_string() } else { ":".to_string() }));
+            }
+            Token::Eq => {
+                stream.next();
+                children.push(JsxChild::Text("=".to_string()));
+            }
+            Token::Comma => {
+                stream.next();
+                let space = matches!(stream.peek(), Token::LCurly | Token::Ident(_) | Token::Number(_));
+                children.push(JsxChild::Text(if space { ", " } else { "," }.to_string()));
+            }
+            Token::QuestionQuestion => {
+                stream.next();
+                let space = matches!(stream.peek(), Token::Ident(_) | Token::LCurly);
+                children.push(JsxChild::Text(if space { "?? " } else { "??" }.to_string()));
+            }
+            Token::QuestionDot => {
+                stream.next();
+                let space = matches!(stream.peek(), Token::Ident(_) | Token::LCurly);
+                children.push(JsxChild::Text(if space { "?. " } else { "?." }.to_string()));
+            }
+            Token::Dot => {
+                stream.next();
+                children.push(JsxChild::Text(".".to_string()));
+            }
+            Token::LParen | Token::RParen => {
+                let s = if matches!(stream.peek(), Token::LParen) { "(" } else { ")" };
+                stream.next();
+                children.push(JsxChild::Text(s.to_string()));
+            }
+            Token::Sub => {
+                stream.next();
+                children.push(JsxChild::Text("-".to_string()));
+            }
+            Token::Keyword(kw) => {
+                let s = match kw {
+                    Keyword::Const => "const",
+                    Keyword::Let => "let",
+                    Keyword::Var => "var",
+                    Keyword::Function => "function",
+                    Keyword::Return => "return",
+                    Keyword::If => "if",
+                    Keyword::Else => "else",
+                    Keyword::For => "for",
+                    Keyword::While => "while",
+                    Keyword::Try => "try",
+                    Keyword::Catch => "catch",
+                    Keyword::Finally => "finally",
+                    Keyword::Await => "await",
+                    Keyword::Async => "async",
+                    Keyword::Export => "export",
+                    Keyword::Default => "default",
+                    Keyword::Import => "import",
+                    Keyword::From => "from",
+                    Keyword::As => "as",
+                };
+                stream.next();
+                let space = matches!(stream.peek(), Token::LCurly | Token::Ident(_));
+                children.push(JsxChild::Text(if space { format!("{} ", s) } else { s.to_string() }));
             }
             Token::String(ref s) => {
                 let s = s.clone();

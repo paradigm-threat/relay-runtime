@@ -11,6 +11,7 @@ Ordered work aligned with [POLICY.md](POLICY.md): **no legacy**, **no hook trans
 3. **themed-styler integration** — Crate dependency + WASM/native: resolve class/theme → concrete style payload for host.
 4. **WASM build** ✅ — `wasm-pack build --target web`; `run_hook(source)` export; test app in `examples/wasm-test/` (verify in browser).
 5. **Hooks** — Complete `useEffect`, `useCallback`, and any semantics required by fixtures.
+6. **Re-render on state change** — See [PLAN.md](PLAN.md) §5. Persist runtime state, wire onClick→invoke_handler, host re-run loop.
 6. **Integration tests** — Enable ignored Layout/query-client tests as parser grows; headless mock-host tests for full trees.
 7. **Docs** — Keep POLICY / PLAN / phases in sync when behavior lands.
 

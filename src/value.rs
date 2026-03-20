@@ -93,6 +93,20 @@ impl Value {
             _ => true,
         }
     }
+
+    /// Invoke a setter (Value::Setter) with the given args. Used when the host
+    /// needs to call back into the runtime (e.g. after user click) without a full Runtime.
+    pub fn invoke_setter(&self, args: &[Value]) -> Result<Value, crate::error::RuntimeError> {
+        match self {
+            Value::Setter(cell) => {
+                let new_val = args.first().cloned().unwrap_or(Value::Null);
+                *cell.borrow_mut() = new_val;
+                crate::run_state::set_render_requested();
+                Ok(Value::Null)
+            }
+            _ => Err(crate::error::RuntimeError::Runtime("Not a setter".to_string())),
+        }
+    }
 }
 
 /// Environment (scope) for variable lookup.

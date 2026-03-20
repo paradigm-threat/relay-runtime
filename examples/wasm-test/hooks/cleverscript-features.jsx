@@ -25,7 +25,7 @@ export default function CleverScriptFeatures() {
     <div className="cleverscript-features">
       <div>?? nullish: a={a}, b={b}, c={c}</div>
       <div>?. optional: d={d}, e={e}, f={f}</div>
-      <div>while sum(0..4)={sum}</div>
+      <div>while sum(0-4)={sum}</div>
     </div>
   );
 }
