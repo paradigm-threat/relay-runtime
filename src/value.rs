@@ -16,12 +16,14 @@ pub enum Value {
     Object(HashMap<String, Value>),
     /// Function reference: (params, body, closure env)
     /// component_hooks: when Some(n), this is a component from another module; use its own hook slots.
+    /// component_module_path: when Some(path), instance is looked up by path for state persistence.
     Function {
         params: Vec<Param>,
         body: Vec<Statement>,
         env: Rc<RefCell<Env>>,
         is_async: bool,
         component_hooks: Option<usize>,
+        component_module_path: Option<String>,
     },
     /// Native/host function
     Native(fn(&[Value]) -> Result<Value, String>),
@@ -109,10 +111,21 @@ impl Value {
     }
 }
 
+/// Mutability of a variable binding (CleverScript: const vs let/var).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Mutability {
+    Const,
+    Let,
+    Var,
+}
+
+/// Optional type name for runtime validation ("number", "string", etc.).
+pub type TypeName = String;
+
 /// Environment (scope) for variable lookup.
 #[derive(Debug, Clone, Default)]
 pub struct Env {
-    pub bindings: HashMap<String, Value>,
+    pub bindings: HashMap<String, (Value, Mutability, Option<TypeName>)>,
     pub parent: Option<Rc<RefCell<Env>>>,
 }
 
@@ -129,14 +142,103 @@ impl Env {
     }
 
     pub fn get(&self, name: &str) -> Option<Value> {
-        self.bindings.get(name).cloned().or_else(|| {
-            self.parent
-                .as_ref()
-                .and_then(|p| p.borrow().get(name))
-        })
+        self.bindings
+            .get(name)
+            .map(|(v, _, _)| v.clone())
+            .or_else(|| self.parent.as_ref().and_then(|p| p.borrow().get(name)))
     }
 
+    pub fn get_mutability(&self, name: &str) -> Option<Mutability> {
+        self.bindings
+            .get(name)
+            .map(|(_, m, _)| *m)
+            .or_else(|| {
+                self.parent
+                    .as_ref()
+                    .and_then(|p| p.borrow().get_mutability(name))
+            })
+    }
+
+    /// Set a variable (host-injected: params, imports, etc.). Always uses Var mutability.
     pub fn set(&mut self, name: &str, value: Value) {
-        self.bindings.insert(name.to_string(), value);
+        self.bindings
+            .insert(name.to_string(), (value, Mutability::Var, None));
+    }
+
+    /// Declare a variable with explicit mutability and optional type.
+    /// Returns Err if type annotation is present and value does not match.
+    pub fn set_with_mutability(
+        &mut self,
+        name: &str,
+        value: Value,
+        mutability: Mutability,
+        type_name: Option<String>,
+    ) -> Result<(), String> {
+        if let Some(ref tn) = type_name {
+            if !value_matches_type(&value, tn) {
+                return Err(format!(
+                    "Type mismatch: {} expects {}, got {}",
+                    name,
+                    tn,
+                    value_type_name(&value)
+                ));
+            }
+        }
+        self.bindings
+            .insert(name.to_string(), (value, mutability, type_name));
+        Ok(())
+    }
+
+    /// Assign to an existing variable. Returns Err if variable is const or type mismatch.
+    pub fn set_checked(&mut self, name: &str, value: Value) -> Result<(), String> {
+        if let Some((_, mutability, type_name)) = self.bindings.get(name) {
+            if *mutability == Mutability::Const {
+                return Err(format!("Cannot reassign const variable: {}", name));
+            }
+            if let Some(tn) = type_name {
+                if !value_matches_type(&value, tn) {
+                    return Err(format!(
+                        "Type mismatch: {} expects {}, got {}",
+                        name,
+                        tn,
+                        value_type_name(&value)
+                    ));
+                }
+            }
+            self.bindings
+                .insert(name.to_string(), (value, *mutability, type_name.clone()));
+            return Ok(());
+        }
+        if let Some(parent) = &self.parent {
+            return parent.borrow_mut().set_checked(name, value);
+        }
+        self.bindings
+            .insert(name.to_string(), (value, Mutability::Var, None));
+        Ok(())
+    }
+}
+
+fn value_type_name(v: &Value) -> &'static str {
+    match v {
+        Value::Null => "null",
+        Value::Bool(_) => "boolean",
+        Value::Number(_) => "number",
+        Value::String(_) => "string",
+        Value::Array(_) => "array",
+        Value::Object(_) => "object",
+        _ => "other",
+    }
+}
+
+fn value_matches_type(v: &Value, type_name: &str) -> bool {
+    match type_name {
+        "number" => matches!(v, Value::Number(_)),
+        "string" => matches!(v, Value::String(_)),
+        "boolean" => matches!(v, Value::Bool(_)),
+        "object" => matches!(v, Value::Object(_)),
+        "array" => matches!(v, Value::Array(_)),
+        "null" => matches!(v, Value::Null),
+        "undefined" => matches!(v, Value::Null),
+        _ => true,
     }
 }

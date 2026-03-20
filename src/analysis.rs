@@ -1,11 +1,11 @@
-//! Semantic analysis: component detection, hook call order, exports.
+//! Semantic analysis: component detection, hook call order, exports, undefined variables.
 //!
 //! Walks AST to produce metadata for the interpreter. No separate IR;
 //! we annotate the program with analysis results.
 
 use crate::ast::*;
 use crate::error::RuntimeError;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 /// Result of semantic analysis.
 #[derive(Debug, Clone, Default)]
@@ -36,6 +36,7 @@ const HOOK_NAMES: &[&str] = &["useState", "useEffect", "useCallback"];
 
 /// Analyze program and produce metadata.
 pub fn analyze(program: &Program) -> Result<AnalysisResult, RuntimeError> {
+    check_undefined_variables(program)?;
     let mut result = AnalysisResult::default();
     let mut component_names = Vec::new();
 
@@ -353,5 +354,355 @@ fn collect_hook_calls_in_expr(expr: &Expr, out: &mut Vec<HookCallSite>, slot: &m
             // Don't recurse into nested functions for hook collection
         }
         _ => {}
+    }
+}
+
+/// Check for undefined variable references. Returns Err on first undefined.
+fn check_undefined_variables(program: &Program) -> Result<(), RuntimeError> {
+    let mut scope: Vec<HashSet<String>> = vec![HashSet::new()];
+    // Host-injected bindings - provided by host at runtime
+    for name in ["params", "env", "navigate", "createElement", "fetch", "useState", "useEffect", "useCallback"] {
+        scope.last_mut().unwrap().insert(name.to_string());
+    }
+
+    for stmt in &program.body {
+        match stmt {
+            Statement::ImportDecl {
+                default_binding,
+                named_bindings,
+                ..
+            } => {
+                if let Some(name) = default_binding {
+                    scope.last_mut().unwrap().insert(name.clone());
+                }
+                for (local, _) in named_bindings {
+                    scope.last_mut().unwrap().insert(local.clone());
+                }
+            }
+            Statement::ExportDefault { declaration } => {
+                if let ExportDefaultDecl::Function { params, body, .. } = declaration.as_ref() {
+                    check_function_scope(params, body, &mut scope)?;
+                }
+            }
+            Statement::ExportNamed { declaration } => {
+                let ExportNamedDecl::Function { params, body, .. } = declaration;
+                check_function_scope(params, body, &mut scope)?;
+            }
+            Statement::FunctionDecl { params, body, .. } => {
+                check_function_scope(params, body, &mut scope)?;
+            }
+            Statement::VariableDecl { declarations, .. } => {
+                for decl in declarations {
+                    check_expr_refs(decl.init.as_deref(), &mut scope)?;
+                    add_pattern_names(&decl.id, scope.last_mut().unwrap());
+                }
+            }
+            Statement::Return { argument } => check_expr_refs(argument.as_deref(), &mut scope)?,
+            Statement::Expr { expression } => check_expr_refs(Some(expression), &mut scope)?,
+            Statement::If {
+                test,
+                consequent,
+                alternate,
+                ..
+            } => {
+                check_expr_refs(Some(test), &mut scope)?;
+                scope.push(HashSet::new());
+                for s in consequent {
+                    check_stmt_refs(s, &mut scope)?;
+                }
+                scope.pop();
+                if let Some(alt) = alternate {
+                    scope.push(HashSet::new());
+                    for s in alt {
+                        check_stmt_refs(s, &mut scope)?;
+                    }
+                    scope.pop();
+                }
+            }
+            Statement::For {
+                init,
+                test,
+                update,
+                body,
+                ..
+            } => {
+                scope.push(HashSet::new());
+                if let Some(i) = init {
+                    check_stmt_refs(i, &mut scope)?;
+                }
+                check_expr_refs(test.as_deref(), &mut scope)?;
+                for s in body {
+                    check_stmt_refs(s, &mut scope)?;
+                }
+                check_expr_refs(update.as_deref(), &mut scope)?;
+                scope.pop();
+            }
+            Statement::While { test, body } => {
+                check_expr_refs(Some(test.as_ref()), &mut scope)?;
+                scope.push(HashSet::new());
+                for s in body {
+                    check_stmt_refs(s, &mut scope)?;
+                }
+                scope.pop();
+            }
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
+fn check_function_scope(
+    params: &[Param],
+    body: &[Statement],
+    scope: &mut Vec<HashSet<String>>,
+) -> Result<(), RuntimeError> {
+    scope.push(HashSet::new());
+    for p in params {
+        scope.last_mut().unwrap().insert(p.name.clone());
+    }
+    for s in body {
+        check_stmt_refs(s, scope)?;
+    }
+    scope.pop();
+    Ok(())
+}
+
+fn check_stmt_refs(stmt: &Statement, scope: &mut Vec<HashSet<String>>) -> Result<(), RuntimeError> {
+    match stmt {
+        Statement::VariableDecl { declarations, .. } => {
+            for decl in declarations {
+                check_expr_refs(decl.init.as_deref(), scope)?;
+                add_pattern_names(&decl.id, scope.last_mut().unwrap());
+            }
+        }
+        Statement::Return { argument } => check_expr_refs(argument.as_deref(), scope)?,
+        Statement::Expr { expression } => check_expr_refs(Some(expression.as_ref()), scope)?,
+        Statement::If {
+            test,
+            consequent,
+            alternate,
+            ..
+        } => {
+            check_expr_refs(Some(test.as_ref()), scope)?;
+            scope.push(HashSet::new());
+            for s in consequent {
+                check_stmt_refs(s, scope)?;
+            }
+            scope.pop();
+            if let Some(alt) = alternate {
+                scope.push(HashSet::new());
+                for s in alt {
+                    check_stmt_refs(s, scope)?;
+                }
+                scope.pop();
+            }
+        }
+        Statement::For {
+            init,
+            test,
+            update,
+            body,
+            ..
+        } => {
+            scope.push(HashSet::new());
+            if let Some(i) = init {
+                check_stmt_refs(i, scope)?;
+            }
+            check_expr_refs(test.as_deref(), scope)?;
+            for s in body {
+                check_stmt_refs(s, scope)?;
+            }
+            check_expr_refs(update.as_deref(), scope)?;
+            scope.pop();
+        }
+        Statement::While { test, body } => {
+            check_expr_refs(Some(test.as_ref()), scope)?;
+            scope.push(HashSet::new());
+            for s in body {
+                check_stmt_refs(s, scope)?;
+            }
+            scope.pop();
+        }
+        Statement::Try {
+            block,
+            handler,
+            finalizer,
+            ..
+        } => {
+            scope.push(HashSet::new());
+            for s in block {
+                check_stmt_refs(s, scope)?;
+            }
+            if let Some(h) = handler {
+                if let Some(param) = &h.param {
+                    scope.last_mut().unwrap().insert(param.clone());
+                }
+                for s in &h.body {
+                    check_stmt_refs(s, scope)?;
+                }
+            }
+            scope.pop();
+            if let Some(f) = finalizer {
+                for s in f {
+                    check_stmt_refs(s, scope)?;
+                }
+            }
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+fn check_expr_refs(
+    expr: Option<&Expr>,
+    scope: &mut Vec<HashSet<String>>,
+) -> Result<(), RuntimeError> {
+    let Some(expr) = expr else { return Ok(()) };
+    match expr {
+        Expr::Identifier { name } => {
+            for s in scope.iter().rev() {
+                if s.contains(name) {
+                    return Ok(());
+                }
+            }
+            return Err(RuntimeError::Ir(format!("Undefined variable: {}", name)));
+        }
+        Expr::Binary { left, right, .. } => {
+            check_expr_refs(Some(left), scope)?;
+            check_expr_refs(Some(right), scope)?;
+        }
+        Expr::Unary { argument, .. } => check_expr_refs(Some(argument), scope)?,
+        Expr::Call { callee, arguments } => {
+            check_expr_refs(Some(callee), scope)?;
+            for a in arguments {
+                check_expr_refs(Some(a), scope)?;
+            }
+        }
+        Expr::Member { object, property, .. } => {
+            check_expr_refs(Some(object), scope)?;
+            // Property Identifier is used as key (obj.prop, arr.length), not as variable - skip
+            if !matches!(property.as_ref(), Expr::Identifier { .. }) {
+                check_expr_refs(Some(property), scope)?;
+            }
+        }
+        Expr::Conditional {
+            test,
+            consequent,
+            alternate,
+            ..
+        } => {
+            check_expr_refs(Some(test), scope)?;
+            check_expr_refs(Some(consequent), scope)?;
+            check_expr_refs(Some(alternate), scope)?;
+        }
+        Expr::Array { elements } => {
+            for e in elements {
+                check_expr_refs(Some(e), scope)?;
+            }
+        }
+        Expr::Object { properties } => {
+            for p in properties {
+                match p {
+                    ObjectExprProp::KeyValue { value, .. } => check_expr_refs(Some(value), scope)?,
+                    ObjectExprProp::Spread { argument } => check_expr_refs(Some(argument), scope)?,
+                }
+            }
+        }
+        Expr::Assign { left, right } => {
+            check_expr_refs(Some(left), scope)?;
+            check_expr_refs(Some(right), scope)?;
+        }
+        Expr::JsxElement(el) => {
+            for prop in &el.props {
+                if let JsxProp::Attribute {
+                    value: JsxAttrValue::Expr(e),
+                    ..
+                } = prop
+                {
+                    check_expr_refs(Some(e), scope)?;
+                }
+            }
+            for child in &el.children {
+                match child {
+                    JsxChild::Expr(e) => check_expr_refs(Some(e), scope)?,
+                    JsxChild::Element(inner) => {
+                        for prop in &inner.props {
+                            if let JsxProp::Attribute {
+                                value: JsxAttrValue::Expr(e),
+                                ..
+                            } = prop
+                            {
+                                check_expr_refs(Some(e), scope)?;
+                            }
+                        }
+                        for c in &inner.children {
+                            if let JsxChild::Expr(e) = c {
+                                check_expr_refs(Some(e), scope)?;
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+        Expr::JsxFragment { children } => {
+            for c in children {
+                if let JsxChild::Expr(e) = c {
+                    check_expr_refs(Some(e), scope)?;
+                }
+            }
+        }
+        Expr::PostfixIncr { argument } | Expr::PostfixDecr { argument } => {
+            check_expr_refs(Some(argument), scope)?;
+        }
+        Expr::TemplateLiteral { expressions, .. } => {
+            for e in expressions {
+                check_expr_refs(Some(e), scope)?;
+            }
+        }
+        Expr::Import { source } => check_expr_refs(Some(source), scope)?,
+        Expr::Await { argument } => check_expr_refs(Some(argument), scope)?,
+        Expr::ArrowFunction { params, body } => {
+            scope.push(HashSet::new());
+            for p in params {
+                scope.last_mut().unwrap().insert(p.name.clone());
+            }
+            match body {
+                ArrowBody::Block(stmts) => {
+                    for s in stmts {
+                        check_stmt_refs(s, scope)?;
+                    }
+                }
+                ArrowBody::Expr(e) => check_expr_refs(Some(e), scope)?,
+            }
+            scope.pop();
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+fn add_pattern_names(pattern: &Pattern, scope: &mut HashSet<String>) {
+    match pattern {
+        Pattern::Identifier { name, .. } => {
+            scope.insert(name.clone());
+        }
+        Pattern::Array { elements } => {
+            for elem in elements {
+                if let Some(Pattern::Identifier { name, .. }) = elem {
+                    scope.insert(name.clone());
+                }
+            }
+        }
+        Pattern::Object { properties } => {
+            for p in properties {
+                if let Some(inner) = &p.value {
+                    add_pattern_names(inner, scope);
+                } else {
+                    // Shorthand: { children } binds variable "children"
+                    scope.insert(p.key.clone());
+                }
+            }
+        }
     }
 }

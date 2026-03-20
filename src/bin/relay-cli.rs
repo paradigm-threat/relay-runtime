@@ -125,7 +125,12 @@ fn collect_files(dir: &Path) -> Vec<PathBuf> {
                 let p = e.path();
                 if p.is_dir() {
                     let name = p.file_name().unwrap_or_default();
-                    if name != "node_modules" && !name.to_string_lossy().starts_with('.') {
+                    let s = name.to_string_lossy();
+                    let skip = s == "node_modules"
+                        || s.starts_with('.')
+                        || s == "pkg"
+                        || s == "themed-styler";
+                    if !skip {
                         walk(&p, out);
                     }
                 } else if let Some(ext) = p.extension() {

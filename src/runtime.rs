@@ -3,7 +3,8 @@
 use crate::analysis::AnalysisResult;
 use crate::ast::*;
 use crate::error::RuntimeError;
-use crate::value::{Env, Value};
+use crate::run_state::LoadedInstances;
+use crate::value::{Env, Mutability, Value};
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
@@ -47,6 +48,7 @@ pub struct Runtime {
     pub default_instance: Option<Rc<RefCell<ComponentInstance>>>,
     /// Host for fetch, navigate, createElement (optional).
     pub host: Option<crate::host::HostHandle>,
+    pub loaded_instances: Option<LoadedInstances>,
 }
 
 impl Runtime {
@@ -58,12 +60,19 @@ impl Runtime {
             current_component: None,
             default_instance: None,
             host: None,
+            loaded_instances: None,
         }
     }
 
     /// Attach a host for fetch, navigate, createElement, load_module.
     pub fn with_host(mut self, host: crate::host::HostHandle) -> Self {
         self.host = Some(host);
+        self
+    }
+
+    /// Attach loaded instances map for useState persistence in dynamically imported modules.
+    pub fn with_loaded_instances(mut self, loaded: LoadedInstances) -> Self {
+        self.loaded_instances = Some(loaded);
         self
     }
 
@@ -216,22 +225,10 @@ impl Runtime {
                 };
                 match &obj {
                     Value::Object(o) => {
-                        if key == "length" {
-                            // Array-like objects (e.g. from JSON): synthetic length from numeric keys
-                            let numeric_keys: Vec<usize> = o.keys().filter_map(|k| k.parse().ok()).collect();
-                            let len = if numeric_keys.is_empty() {
-                                0
-                            } else {
-                                (*numeric_keys.iter().max().unwrap() + 1).max(numeric_keys.len())
-                            };
-                            Ok(o.get(&key)
-                                .cloned()
-                                .unwrap_or_else(|| Value::Number(len as f64)))
-                        } else {
-                            o.get(&key)
-                                .cloned()
-                                .ok_or_else(|| RuntimeError::Runtime(format!("Property '{}' not found", key)))
-                        }
+                        // CleverScript: objects have string keys only. No synthetic length.
+                        o.get(&key)
+                            .cloned()
+                            .ok_or_else(|| RuntimeError::Runtime(format!("Property '{}' not found", key)))
                     }
                     Value::Array(a) => {
                         if key == "length" {
@@ -275,6 +272,7 @@ impl Runtime {
                     env: self.env.clone(),
                     is_async: false,
                     component_hooks: None,
+                    component_module_path: None,
                 })
             }
             Expr::JsxElement(el) => self.eval_jsx_element(el),
@@ -297,7 +295,8 @@ impl Runtime {
                 };
                 let new_val = Value::Number(n + 1.0);
                 if let Expr::Identifier { name } = argument.as_ref() {
-                    self.env.borrow_mut().set(name, new_val);
+                    self.env.borrow_mut().set_checked(name, new_val)
+                        .map_err(RuntimeError::Runtime)?;
                 }
                 Ok(old)
             }
@@ -309,7 +308,8 @@ impl Runtime {
                 };
                 let new_val = Value::Number(n - 1.0);
                 if let Expr::Identifier { name } = argument.as_ref() {
-                    self.env.borrow_mut().set(name, new_val);
+                    self.env.borrow_mut().set_checked(name, new_val)
+                        .map_err(RuntimeError::Runtime)?;
                 }
                 Ok(old)
             }
@@ -317,7 +317,8 @@ impl Runtime {
                 let val = self.eval_expr(right)?;
                 match left.as_ref() {
                     Expr::Identifier { name } => {
-                        self.env.borrow_mut().set(name, val.clone());
+                        self.env.borrow_mut().set_checked(name, val.clone())
+                            .map_err(RuntimeError::Runtime)?;
                     }
                     Expr::Member {
                         object,
@@ -365,7 +366,8 @@ impl Runtime {
                             }
                         }
                         if let Expr::Identifier { name } = object.as_ref() {
-                            self.env.borrow_mut().set(name, obj);
+                            self.env.borrow_mut().set_checked(name, obj)
+                                .map_err(RuntimeError::Runtime)?;
                         }
                     }
                     _ => {
@@ -534,12 +536,17 @@ impl Runtime {
                 body,
                 env,
                 component_hooks,
+                component_module_path,
                 ..
             } => {
                 let child_env = Env::child(env.clone());
                 for (i, param) in params.iter().enumerate() {
                     let val = args.get(i).cloned().unwrap_or(Value::Null);
-                    child_env.borrow_mut().set(&param.name, val);
+                    let type_name = param.type_annotation.as_ref().map(|t| t.name.clone());
+                    child_env
+                        .borrow_mut()
+                        .set_with_mutability(&param.name, val, Mutability::Var, type_name)
+                        .map_err(RuntimeError::Runtime)?;
                 }
                 let prev_env = std::mem::replace(&mut self.env, child_env);
                 let prev_component = if component_hooks.is_some() {
@@ -548,10 +555,25 @@ impl Runtime {
                     None
                 };
                 if let Some(num_hooks) = *component_hooks {
-                    let instance = Rc::new(RefCell::new(ComponentInstance::new(
-                        "<loaded>".to_string(),
-                        num_hooks,
-                    )));
+                    let instance = if let (Some(ref path), Some(ref loaded)) =
+                        (component_module_path, &self.loaded_instances)
+                    {
+                        let mut map = loaded.borrow_mut();
+                        map.entry(path.clone())
+                            .or_insert_with(|| {
+                                Rc::new(RefCell::new(ComponentInstance::new(
+                                    "<loaded>".to_string(),
+                                    num_hooks,
+                                )))
+                            })
+                            .clone()
+                    } else {
+                        Rc::new(RefCell::new(ComponentInstance::new(
+                            "<loaded>".to_string(),
+                            num_hooks,
+                        )))
+                    };
+                    instance.borrow_mut().hook_index = 0;
                     self.current_component = Some(instance);
                 }
                 let mut result = Value::Null;
@@ -580,9 +602,14 @@ impl Runtime {
     pub fn eval_stmt(&mut self, stmt: &Statement) -> Result<(), RuntimeError> {
         match stmt {
             Statement::VariableDecl {
-                kind: _,
+                kind,
                 declarations,
             } => {
+                let mutability = match kind {
+                    VarKind::Const => Mutability::Const,
+                    VarKind::Let => Mutability::Let,
+                    VarKind::Var => Mutability::Var,
+                };
                 for decl in declarations {
                     let val = decl
                         .init
@@ -590,14 +617,21 @@ impl Runtime {
                         .map(|e| self.eval_expr(e))
                         .transpose()?
                         .unwrap_or(Value::Null);
-                    if let Pattern::Identifier { name } = &decl.id {
-                        self.env.borrow_mut().set(name, val);
+                    if let Pattern::Identifier { name, type_annotation } = &decl.id {
+                        let type_name = type_annotation.as_ref().map(|t| t.name.clone());
+                        self.env
+                            .borrow_mut()
+                            .set_with_mutability(name, val, mutability, type_name)
+                            .map_err(RuntimeError::Runtime)?;
                     } else if let Pattern::Array { elements } = &decl.id {
                         if let Value::Array(arr) = val {
                             for (i, elem) in elements.iter().enumerate() {
-                                if let Some(Pattern::Identifier { name }) = elem.as_ref() {
+                                if let Some(Pattern::Identifier { name, .. }) = elem.as_ref() {
                                     let v = arr.get(i).cloned().unwrap_or(Value::Null);
-                                    self.env.borrow_mut().set(name, v);
+                                    self.env
+                                        .borrow_mut()
+                                        .set_with_mutability(name, v, mutability, None)
+                                        .map_err(RuntimeError::Runtime)?;
                                 }
                             }
                         }
@@ -621,9 +655,12 @@ impl Runtime {
                 } else {
                     &[][..]
                 };
+                let block_env = Env::child(self.env.clone());
+                let prev_env = std::mem::replace(&mut self.env, block_env);
                 for s in stmts {
                     self.eval_stmt(s)?;
                 }
+                self.env = prev_env;
             }
             Statement::For {
                 init,
@@ -631,6 +668,8 @@ impl Runtime {
                 update,
                 body,
             } => {
+                let block_env = Env::child(self.env.clone());
+                let prev_env = std::mem::replace(&mut self.env, block_env);
                 if let Some(i) = init {
                     self.eval_stmt(i)?;
                 }
@@ -648,12 +687,16 @@ impl Runtime {
                         self.eval_expr(u)?;
                     }
                 }
+                self.env = prev_env;
             }
             Statement::While { test, body } => {
                 while self.eval_expr(test)?.is_truthy() {
+                    let block_env = Env::child(self.env.clone());
+                    let prev_env = std::mem::replace(&mut self.env, block_env);
                     for s in body {
                         self.eval_stmt(s)?;
                     }
+                    self.env = prev_env;
                 }
             }
             _ => {}
@@ -842,6 +885,35 @@ impl Runtime {
         Err(RuntimeError::Runtime("Default export not found".to_string()))
     }
 
+    /// Get module exports for a given path. Sets component_module_path so instances persist across re-renders.
+    pub fn get_module_exports_for_path(&mut self, path: &str) -> Result<Value, RuntimeError> {
+        let mut exports = self.get_module_exports()?;
+        if let Value::Object(ref mut o) = exports {
+            if let Some(Value::Function {
+                params,
+                body,
+                env,
+                is_async,
+                component_hooks,
+                ..
+            }) = o.remove("default")
+            {
+                o.insert(
+                    "default".to_string(),
+                    Value::Function {
+                        params,
+                        body,
+                        env,
+                        is_async,
+                        component_hooks,
+                        component_module_path: Some(path.to_string()),
+                    },
+                );
+            }
+        }
+        Ok(exports)
+    }
+
     /// Get module exports (default export function) without running the component.
     /// Used by load_module when a hook does import(path).
     pub fn get_module_exports(&mut self) -> Result<Value, RuntimeError> {
@@ -880,6 +952,7 @@ impl Runtime {
             env: self.env.clone(),
             is_async,
             component_hooks: Some(num_hooks),
+            component_module_path: None,
         };
         let mut exports = HashMap::new();
         exports.insert("default".to_string(), default_fn);

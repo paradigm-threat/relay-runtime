@@ -65,10 +65,20 @@ pub struct VariableDeclarator {
     pub init: Option<Box<Expr>>,
 }
 
+/// Optional type annotation for variables and params (e.g. "number", "string").
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TypeAnnotation {
+    pub name: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type")]
 pub enum Pattern {
-    Identifier { name: String },
+    Identifier {
+        name: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        type_annotation: Option<TypeAnnotation>,
+    },
     Array { elements: Vec<Option<Pattern>> },
     Object { properties: Vec<ObjectProp> },
 }
@@ -83,6 +93,8 @@ pub struct ObjectProp {
 pub struct Param {
     pub name: String,
     pub rest: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub type_annotation: Option<TypeAnnotation>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

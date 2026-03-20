@@ -367,11 +367,34 @@ fn parse_variable_decl(stream: &mut TokenStream) -> Result<Statement, RuntimeErr
     })
 }
 
+fn is_type_name(s: &str) -> bool {
+    matches!(
+        s,
+        "number" | "string" | "boolean" | "object" | "array" | "null" | "undefined"
+    )
+}
+
 fn parse_pattern(stream: &mut TokenStream) -> Result<Pattern, RuntimeError> {
     match stream.peek() {
-        Token::Ident(_) => Ok(Pattern::Identifier {
-            name: expect_ident(stream)?,
-        }),
+        Token::Ident(_) => {
+            let name = expect_ident(stream)?;
+            let type_annotation = if stream.peek() == &Token::Colon {
+                if let Token::Ident(ref type_name) = stream.peek_ahead(1) {
+                    if is_type_name(type_name) {
+                        stream.next(); // consume colon
+                        let name = expect_ident(stream)?;
+                        Some(crate::ast::TypeAnnotation { name })
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
+            Ok(Pattern::Identifier { name, type_annotation })
+        }
         Token::LBrack => {
             stream.next();
             let mut elements = Vec::new();
@@ -439,7 +462,22 @@ fn parse_params(stream: &mut TokenStream) -> Result<Vec<Param>, RuntimeError> {
     while !matches!(stream.peek(), Token::RParen) {
         let rest = eat_token(stream, Token::Spread);
         let name = expect_ident(stream)?;
-        params.push(Param { name, rest });
+        let type_annotation = if stream.peek() == &Token::Colon {
+            if let Token::Ident(ref type_name) = stream.peek_ahead(1) {
+                if is_type_name(type_name) {
+                    stream.next(); // consume colon
+                    let name = expect_ident(stream)?;
+                    Some(crate::ast::TypeAnnotation { name })
+                } else {
+                    None
+                }
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+        params.push(Param { name, rest, type_annotation });
         if !eat_token(stream, Token::Comma) {
             break;
         }
@@ -452,7 +490,22 @@ fn parse_arrow_params(stream: &mut TokenStream) -> Result<Vec<Param>, RuntimeErr
     let mut params = Vec::new();
     loop {
         let name = expect_ident(stream)?;
-        params.push(Param { name, rest: false });
+        let type_annotation = if stream.peek() == &Token::Colon {
+            if let Token::Ident(ref type_name) = stream.peek_ahead(1) {
+                if is_type_name(type_name) {
+                    stream.next(); // consume colon
+                    let name = expect_ident(stream)?;
+                    Some(crate::ast::TypeAnnotation { name })
+                } else {
+                    None
+                }
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+        params.push(Param { name, rest: false, type_annotation });
         if eat_token(stream, Token::RParen) {
             break;
         }

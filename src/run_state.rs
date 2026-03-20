@@ -21,12 +21,14 @@ thread_local! {
     static RENDER_REQUESTED: Cell<bool> = Cell::new(false);
 }
 
+/// Shared map of module path -> component instance for useState persistence in loaded hooks.
+pub type LoadedInstances = Rc<RefCell<HashMap<String, Rc<RefCell<ComponentInstance>>>>>;
+
 struct RunState {
     program: Program,
     analysis: AnalysisResult,
     default_instance: Rc<RefCell<ComponentInstance>>,
-    #[allow(dead_code)]
-    loaded_instances: HashMap<String, Rc<RefCell<ComponentInstance>>>,
+    loaded_instances: LoadedInstances,
     host: HostHandle,
     /// Source string; when it changes, we reset.
     source: String,
@@ -72,7 +74,9 @@ pub fn invoke_handler(id: u32) -> Result<Value, RuntimeError> {
         let rs = state.as_ref().ok_or_else(|| {
             RuntimeError::Runtime("No RunState (invoke_handler called before run)".to_string())
         })?;
-        let mut runtime = Runtime::new(rs.program.clone(), rs.analysis.clone()).with_host(rs.host.clone());
+        let mut runtime = Runtime::new(rs.program.clone(), rs.analysis.clone())
+            .with_host(rs.host.clone())
+            .with_loaded_instances(rs.loaded_instances.clone());
         runtime.default_instance = Some(rs.default_instance.clone());
         runtime.call_value(&handler, &[])
     })
@@ -100,7 +104,10 @@ pub fn run_hook_persistent(
         if state.is_none() {
             HANDLER_REGISTRY.with(|h| h.borrow_mut().clear());
             NEXT_HANDLER_ID.with(|n| n.set(1));
-            let mut runtime = Runtime::new(program.clone(), analysis.clone()).with_host(host.clone());
+            let loaded = Rc::new(RefCell::new(HashMap::new()));
+            let mut runtime = Runtime::new(program.clone(), analysis.clone())
+                .with_host(host.clone())
+                .with_loaded_instances(loaded.clone());
             let result = runtime.run()?;
             let default_instance = runtime
                 .default_instance
@@ -110,7 +117,7 @@ pub fn run_hook_persistent(
                 program,
                 analysis,
                 default_instance,
-                loaded_instances: HashMap::new(),
+                loaded_instances: loaded,
                 host,
                 source: source.to_string(),
             });
@@ -118,7 +125,9 @@ pub fn run_hook_persistent(
         }
 
         let rs = state.as_ref().unwrap();
-        let mut runtime = Runtime::new(rs.program.clone(), rs.analysis.clone()).with_host(rs.host.clone());
+        let mut runtime = Runtime::new(rs.program.clone(), rs.analysis.clone())
+            .with_host(rs.host.clone())
+            .with_loaded_instances(rs.loaded_instances.clone());
         runtime.default_instance = Some(rs.default_instance.clone());
         runtime.run()
     })

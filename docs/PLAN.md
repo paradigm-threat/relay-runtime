@@ -137,10 +137,65 @@ Host calls run_hook_with_host() → Runtime runs once → returns VNode → host
 
 ---
 
-## 6. References
+## 6. CleverScript Hardening (from [CLEVERSCRIPT_ANALYSIS.md](docs/CLEVERSCRIPT_ANALYSIS.md))
+
+Recommendations from [CLEVERSCRIPT_ANALYSIS.md](CLEVERSCRIPT_ANALYSIS.md), implemented in phases with **TDD: tests first, then implementation**.
+
+### 6.1 Phase 1: Variable Declaration Semantics (Immediate)
+
+| Step | Description | Tests | Status |
+|------|-------------|-------|--------|
+| **1.1** | Enforce `const` immutability | `tests/cleverscript_const.rs`: reassigning `const` throws runtime error | ✅ Done |
+| **1.2** | Block scoping for `let`/`const` | `tests/cleverscript_block_scope.rs`: variables in `if`/`for`/`while` don't leak | ✅ Done |
+| **1.3** | TDZ (Temporal Dead Zone) | `tests/cleverscript_tdz.rs`: access before init throws | ✅ Done |
+| **1.4** | Honor `VarKind` in runtime | Covered by 1.1–1.3 | — |
+
+**TDD order:** Write failing test → implement → green → next.
+
+### 6.2 Phase 2: Object/Array Strict Separation
+
+| Step | Description | Tests | Status |
+|------|-------------|-------|--------|
+| **2.1** | Remove synthetic `length` from objects | `tests/cleverscript_objects_arrays.rs`: `obj.length` on plain object is undefined/error | ✅ Done |
+| **2.2** | Arrays: numeric indices only | Reject `arr["foo"]` (non-length) on arrays | ✅ Done |
+| **2.3** | Objects: string keys only | No array-like behavior | ✅ Done |
+
+### 6.3 Phase 3: Automatic Error Containment
+
+| Step | Description | Tests | Status |
+|------|-------------|-------|--------|
+| **3.1** | Per-expression try/catch in JSX | `tests/cleverscript_error_containment.rs`: child throws → sibling/parent still render | ✅ Done |
+| **3.2** | Error placeholder vnode | Thrown component renders fallback (blank or configurable) | Future |
+
+### 6.4 Phase 4: Static Analysis (Short Term)
+
+| Step | Description | Tests | Status |
+|------|-------------|-------|--------|
+| **4.1** | Undefined variable detection | `tests/analysis_undefined.rs`: parse/analyze reports undefined refs | ✅ Done |
+
+### 6.5 Phase 5: Optional Type Annotations (Medium Term)
+
+| Step | Description | Tests | Status |
+|------|-------------|-------|--------|
+| **5.1** | Parse type annotations | `tests/parse_type_annotations.rs` | ✅ Done |
+| **5.2** | Runtime type validation | Assignment checks match declared type | ✅ Done |
+
+### 6.6 TDD Workflow
+
+For each phase:
+
+1. **Red:** Add test file with failing assertions.
+2. **Green:** Implement minimal code to pass.
+3. **Refactor:** Clean up; ensure existing tests still pass.
+4. **Commit:** Phase complete.
+
+---
+
+## 7. References
 
 - **[POLICY.md](POLICY.md)** — no legacy, no hook transpile, themed-styler separate.
 - **[NEXT_STEPS.md](NEXT_STEPS.md)** — ordered implementation and client teardown.
 - **[IMPLEMENTATION_PHASES.md](IMPLEMENTATION_PHASES.md)** — phases, tests, re-render (Phase 3.1).
+- **[CLEVERSCRIPT_ANALYSIS.md](CLEVERSCRIPT_ANALYSIS.md)** — language analysis, hardening recommendations.
 - **[WEB_WASM_HOST.md](WEB_WASM_HOST.md)** — web: WASM core; host JS glue only.
 - **themed-styler**, **relay-client-android**, **relay-client-web**, **relay-server**, **Songwalker Core**.

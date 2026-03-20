@@ -168,7 +168,7 @@ impl Host for ModuleMapHost {
         if let Some(ref host) = *self.parent_host.borrow() {
             runtime = runtime.with_host(host.clone());
         }
-        let exports = runtime.get_module_exports().map_err(|e| format!("{}", e))?;
+        let exports = runtime.get_module_exports_for_path(path).map_err(|e| format!("{}", e))?;
         self.cache.borrow_mut().insert(path.to_string(), exports.clone());
         Ok(exports)
     }
