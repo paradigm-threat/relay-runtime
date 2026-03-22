@@ -8,6 +8,7 @@
 use crate::host::{Host, HostHandle, ModuleMapHost};
 use crate::run_state;
 use crate::runtime::Runtime;
+use crate::style_resolve::{resolve_vnode_styles, Platform};
 use crate::value::Value;
 use crate::vdom::collect_usage_from_vnode_json;
 use crate::vdom::value_to_vnode_with_handlers;
@@ -69,15 +70,25 @@ fn log_verbose(msg: &str) {
 }
 
 fn runtime_error_to_js(e: RuntimeError) -> JsValue {
-    let msg = match &e {
-        RuntimeError::ParseDetail(d) => match serde_json::to_string(&d.to_json()) {
-            Ok(s) => s,
-            Err(_) => format!("{}", e),
-        },
-        _ => format!("{}", e),
+    let (msg, json_str) = match &e {
+        RuntimeError::ParseDetail(d) => (
+            format!("{}", e),
+            serde_json::to_string(&d.to_json()).unwrap_or_else(|_| format!("{}", e)),
+        ),
+        RuntimeError::RuntimeDetail(_) => {
+            // Pass full JSON for host debug UI (call_stack, locals).
+            let json = e.to_error_json();
+            let s = serde_json::to_string(&json).unwrap_or_else(|_| format!("{}", e));
+            (format!("{}", e), s)
+        }
+        _ => {
+            let json = e.to_error_json();
+            let s = serde_json::to_string(&json).unwrap_or_else(|_| format!("{}", e));
+            (format!("{}", e), s)
+        }
     };
     log_error(&format!("[relay-runtime] {}", msg));
-    JsValue::from_str(&msg)
+    JsValue::from_str(&json_str)
 }
 
 /// Run hook source and return VNode tree as JSON for host to apply to DOM.
@@ -203,9 +214,16 @@ pub fn run_hook_with_host(
         JsValue::from_str(&msg)
     })?;
     let vnode = value_to_vnode_with_handlers(&result, &mut |v| run_state::register_handler(v)).normalize();
+    let (resolved, inject_css, state_json) = resolve_vnode_styles(vnode, theme_yaml, Platform::Web, 1.0, None, false);
+    if let Some(css) = inject_css {
+        INJECTED_CSS.with(|c| *c.borrow_mut() = css);
+    }
+    if let Some(json) = state_json {
+        LAST_STATE.with(|c| *c.borrow_mut() = json);
+    }
 
     // Debug: when result normalizes to Empty, log what we got to help diagnose
-    if matches!(vnode, crate::vdom::VNode::Empty) {
+    if matches!(&resolved, crate::vdom::VNode::Empty) {
         let result_preview = serde_json::to_string(&result.to_json()).unwrap_or_else(|_| "?".into());
         let preview = if result_preview.len() > 500 {
             format!("{}...", &result_preview[..500])
@@ -226,7 +244,7 @@ pub fn run_hook_with_host(
         ));
     }
 
-    serde_json::to_string(&vnode).map_err(|e| {
+    serde_json::to_string(&resolved).map_err(|e| {
         let msg = format!("[relay-runtime] Serialize error: {}", e);
         log_error(&msg);
         JsValue::from_str(&msg)
@@ -317,23 +335,16 @@ pub fn consume_render_requested() -> bool {
     run_state::consume_render_requested()
 }
 
-/// Set current theme and return new CSS. Updates LAST_STATE and INJECTED_CSS.
+/// Set current theme and update LAST_STATE. Returns empty (no CSS; host must re-run hook for new styles).
 #[wasm_bindgen]
 pub fn set_theme_and_render(theme_name: &str) -> String {
-    let (new_state, css) = LAST_STATE.with(|c| {
+    LAST_STATE.with(|c| {
         let state = c.borrow().clone();
-        if state.is_empty() {
-            return (String::new(), String::new());
+        if !state.is_empty() {
+            *c.borrow_mut() = set_theme_json(&state, theme_name);
         }
-        let new_state = set_theme_json(&state, theme_name);
-        let css = render_css_for_web(&new_state);
-        *c.borrow_mut() = new_state.clone();
-        (new_state, css)
     });
-    if !new_state.is_empty() {
-        INJECTED_CSS.with(|c| *c.borrow_mut() = css.clone());
-    }
-    css
+    String::new()
 }
 
 fn inject_styles_native(args: &[Value]) -> Result<Value, String> {
@@ -633,12 +644,69 @@ fn value_to_json_string(v: &Value) -> Result<String, String> {
     serde_json::to_string(&v.to_json()).map_err(|e| e.to_string())
 }
 
-/// Module for import('react'): useState, useEffect, useCallback as ReactHook values.
+/// Module for import('react'): useState, useEffect, useCallback, useRef, lazy, Suspense.
 fn react_module() -> Value {
     let mut obj = HashMap::new();
     obj.insert("useState".to_string(), Value::ReactHook("useState".to_string()));
     obj.insert("useEffect".to_string(), Value::ReactHook("useEffect".to_string()));
     obj.insert("useCallback".to_string(), Value::ReactHook("useCallback".to_string()));
+    obj.insert("useRef".to_string(), Value::ReactHook("useRef".to_string()));
+    obj.insert(
+        "lazy".to_string(),
+        Value::Native(|args: &[Value]| {
+            let factory = args.first().ok_or("lazy requires factory fn")?;
+            let Value::Function { params, body, env, is_async, component_hooks, component_module_path } = factory.clone() else {
+                return Err("lazy factory must be function".to_string());
+            };
+            let host = crate::run_state::get_host_for_lazy().ok_or("lazy requires host")?;
+            let program = crate::ast::Program { body: vec![] };
+            let analysis = crate::analysis::AnalysisResult::default();
+            let mut rt = crate::runtime::Runtime::new(program, analysis).with_host(host);
+            let module = rt
+                .call_value(
+                    &Value::Function {
+                        params,
+                        body,
+                        env,
+                        is_async,
+                        component_hooks,
+                        component_module_path,
+                    },
+                    &[],
+                )
+                .map_err(|e| e.to_string())?;
+            let default = match &module {
+                Value::Object(o) => o.get("default").cloned(),
+                _ => None,
+            };
+            Ok(default.unwrap_or(module))
+        }),
+    );
+    obj.insert(
+        "Suspense".to_string(),
+        Value::Function {
+            params: vec![crate::ast::Param {
+                name: "props".to_string(),
+                rest: false,
+                type_annotation: None,
+            }],
+            body: vec![crate::ast::Statement::Return {
+                argument: Some(Box::new(crate::ast::Expr::Member {
+                    object: Box::new(crate::ast::Expr::Identifier {
+                        name: "props".to_string(),
+                    }),
+                    property: Box::new(crate::ast::Expr::Identifier {
+                        name: "children".to_string(),
+                    }),
+                    optional: false,
+                })),
+            }],
+            env: crate::value::Env::new(),
+            is_async: false,
+            component_hooks: Some(0),
+            component_module_path: None,
+        },
+    );
     Value::Object(obj)
 }
 
