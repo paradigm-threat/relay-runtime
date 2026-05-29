@@ -1,104 +1,183 @@
-import theme from '@theme'
-import styler from 'relay-runtime/themed-styler'
-import relayRuntime from '@clevertree/relay-runtime'
-import hooksManifest from '@hooks'
+// Main application hook - entry point for runtime-transpiled JSX
+// CleverScript-compatible. Works on web and native (relay-runtime).
+import React, { useState, useEffect, lazy, Suspense } from 'react'
 
-/**
- * App hook — orchestrates theme loading, hook execution, and CSS injection.
- * Theme toggle via @clevertree/relay-runtime (getThemes); setCurrentTheme handled by event delegation.
- */
-export default async function App() {
-  let state = styler.get_default_state_json();
+// Lazy load page components — paths must match asset keys in module map (e.g. hooks/home.jsx)
+const Home = lazy(() => import('hooks/home.jsx'))
+const Settings = lazy(() => import('hooks/settings.jsx'))
+const PeerContent = lazy(() => import('hooks/peerContent.jsx'))
+const Demo = lazy(() => import('hooks/demo.jsx'))
+const UseStateDemo = lazy(() => import('hooks/use-state-demo.jsx'))
+const StyleKeywords = lazy(() => import('hooks/style-keywords.jsx'))
+const CleverScriptFeatures = lazy(() => import('hooks/cleverscript-features.jsx'))
+const SimpleJsx = lazy(() => import('hooks/simple-jsx.jsx'))
+const NestedStructure = lazy(() => import('hooks/nested-structure.jsx'))
+const StringKeywords = lazy(() => import('hooks/string-keywords.jsx'))
 
-  if (theme && theme.themes) {
-    const entries = styler.objectEntries(theme.themes);
-    for (let i = 0; i < entries.length; i++) {
-      const entry = entries[i];
-      const name = entry[0];
-      const themeData = entry[1];
-      const themeJson = styler.buildThemeJson(name, themeData);
-      state = styler.register_theme_json(state, themeJson);
-    }
-    state = styler.set_theme_json(state, 'default');
-  }
+const STORAGE_KEY_ACTIVE_TAB = 'relay:activeTab'
 
-  let sectionNames = [];
-  let sectionVnodes = [];
-  let allTags = [];
-  let allClasses = [];
-  let allTagClasses = [];
+function LoadingFallback() {
+    return (
+        <div className="flex items-center justify-center h-full w-full">
+            <div className="text-center">
+                <p className="text-base">Loading...</p>
+            </div>
+        </div>
+    )
+}
 
-  if (hooksManifest && hooksManifest.hooks) {
-    const hooks = hooksManifest.hooks;
-    for (let i = 0; i < hooks.length; i = i + 1) {
-      const hook = hooks[i];
-      const mod = await import(hook.path);
-      const vnode = mod.default();
-      const vnodeStr = styler.stringifyJson(vnode);
-      const usage = styler.parseJson(styler.collectUsage(vnodeStr));
-      if (usage.tags) {
-        for (let j = 0; j < usage.tags.length; j++) {
-          allTags = styler.arrayConcat(allTags, [usage.tags[j]]);
+export default function App() {
+    const getInitialState = () => {
+        try {
+            const storedTab = localStorage.getItem(STORAGE_KEY_ACTIVE_TAB)
+            if (storedTab) {
+                const parsed = JSON.parse(storedTab)
+                const tabId = parsed.tabId
+                const storedTabs = parsed.tabs
+                if (storedTabs && Array.isArray(storedTabs) && storedTabs.length > 0) {
+                    return { activeTab: tabId || 'home', tabs: storedTabs }
+                }
+            }
+        } catch (e) {
+            // fallback
         }
-      }
-      if (usage.classes) {
-        for (let j = 0; j < usage.classes.length; j++) {
-          allClasses = styler.arrayConcat(allClasses, [usage.classes[j]]);
+        return {
+            activeTab: 'home',
+            tabs: [
+                { id: 'home', title: 'Home', isHome: true },
+                { id: 'demo', title: 'Demo' },
+                { id: 'styles', title: 'Styles' },
+                { id: 'simple', title: 'Simple' },
+                { id: 'nested', title: 'Nested' },
+                { id: 'string', title: 'String' },
+                { id: 'cleverscript', title: 'CleverScript' },
+                { id: 'settings', title: 'Settings' }
+            ]
         }
-      }
-      if (usage.tag_classes) {
-        for (let j = 0; j < usage.tag_classes.length; j++) {
-          allTagClasses = styler.arrayConcat(allTagClasses, [usage.tag_classes[j]]);
+    }
+
+    const initialState = getInitialState()
+    const [activeTab, setActiveTab] = useState(initialState.activeTab)
+    const [tabs, setTabs] = useState(initialState.tabs)
+
+    useEffect(() => {
+        try {
+            localStorage.setItem(STORAGE_KEY_ACTIVE_TAB, JSON.stringify({ tabId: activeTab, tabs }))
+        } catch (e) {
+            // ignore
         }
-      }
-      sectionNames = styler.arrayConcat(sectionNames, [hook.name]);
-      sectionVnodes = styler.arrayConcat(sectionVnodes, [vnode]);
-    }
-  }
+    }, [activeTab, tabs])
 
-  const stateWithUsage = styler.mergeUsageIntoState(state, allTags, allClasses, allTagClasses);
-  const css = styler.render_css_for_web(stateWithUsage);
-  styler.injectStyles(css);
-
-  let themeNames = [];
-  const themesJson = relayRuntime.getThemes();
-  const themesArr = styler.parseJson(themesJson);
-  if (themesArr && themesArr.length) {
-    for (let i = 0; i < themesArr.length; i++) {
-      const t = themesArr[i];
-      const key = t.key;
-      if (key) themeNames = styler.arrayConcat(themeNames, [key]);
+    const openPeerTab = (host) => {
+        const existingTab = tabs.find(t => t.host === host)
+        if (existingTab) {
+            setActiveTab(existingTab.id)
+            return
+        }
+        const parts = host.split('//')
+        const afterScheme = parts.length > 1 ? parts[1] : host
+        const firstPart = afterScheme.split('/')[0]
+        const title = firstPart || host
+        const newTab = {
+            id: 'peer-' + Date.now(),
+            title,
+            host,
+            isPeer: true
+        }
+        const updatedTabs = tabs.concat([newTab])
+        setTabs(updatedTabs)
+        setActiveTab(newTab.id)
     }
-  }
 
-  let children = [];
-  if (themeNames.length > 0) {
-    let toggleButtons = [];
-    for (let i = 0; i < themeNames.length; i++) {
-      const name = themeNames[i];
-      toggleButtons = styler.arrayConcat(toggleButtons, [
-        <button className="theme-toggle-btn" dataTheme={name}>
-          {name}
-        </button>
-      ]);
+    const closeTab = (e, tabId) => {
+        if (e && e.stopPropagation) e.stopPropagation()
+        const tabToClose = tabs.find(t => t.id === tabId)
+        if (!tabToClose || tabToClose.isHome || tabId === 'settings') return
+
+        const updatedTabs = tabs.filter(t => t.id !== tabId)
+        setTabs(updatedTabs)
+
+        if (activeTab === tabId) {
+            setActiveTab('home')
+        }
     }
-    children = styler.arrayConcat(children, [
-      <div className="theme-toggle">
-        {toggleButtons}
-      </div>
-    ]);
-  }
-  for (let i = 0; i < sectionNames.length; i++) {
-    const name = sectionNames[i];
-    const vnode = sectionVnodes[i];
-    children = styler.arrayConcat(children, [
-      <div className="test-section">
-        <div className="test-header">{name}</div>
-        <div className="test-output">{vnode}</div>
-      </div>
-    ]);
-  }
-  let result = children;
-  if (children.length === 0) result = [<div>No content</div>];
-  return result;
+
+    const handleTabClick = (tabId) => {
+        setActiveTab(tabId)
+    }
+
+    const renderContent = () => {
+        const currentTab = tabs.find(t => t.id === activeTab)
+
+        if (currentTab && currentTab.isPeer) {
+            return <PeerContent host={currentTab.host} />
+        }
+
+        if (activeTab === 'home') return <Home openPeerTab={openPeerTab} />
+        if (activeTab === 'demo') return <Demo />
+        if (activeTab === 'styles') return <StyleKeywords />
+        if (activeTab === 'simple') return <SimpleJsx />
+        if (activeTab === 'nested') return <NestedStructure />
+        if (activeTab === 'string') return <StringKeywords />
+        if (activeTab === 'cleverscript') return <CleverScriptFeatures />
+        if (activeTab === 'settings') return <Settings />
+
+        return (
+            <div className="flex items-center justify-center h-full w-full">
+                <div className="text-center">
+                    <h2 className="mb-2 text-2xl font-semibold">No content</h2>
+                    <p className="text-base">Select a tab</p>
+                </div>
+            </div>
+        )
+    }
+
+    return (
+        <div className="flex flex-col w-screen h-screen bg-primary theme">
+            {/* Tab Bar */}
+            <div className="border-b overflow-x-auto overflow-y-hidden">
+                <div className="flex gap-1 p-0 min-h-11 items-center">
+                    <div className="flex gap-1">
+                        {tabs.map((tab) => {
+                            const isActive = tab.id === activeTab
+                            return (
+                                <div
+                                    key={tab.id}
+                                    className={'flex items-center gap-2 px-4 py-2 border border-b-2 rounded-t-lg cursor-pointer transition-all flex-shrink-0 min-w-32 max-w-60 ' + (isActive
+                                        ? 'border-b-blue-500 font-semibold bg-surface'
+                                        : 'border-b-transparent')}
+                                    onClick={() => handleTabClick(tab.id)}
+                                >
+                                    <span
+                                        className="flex-1 overflow-hidden text-ellipsis whitespace-nowrap text-sm"
+                                        title={tab.title}
+                                    >
+                                        {tab.title}
+                                    </span>
+                                    {tab.isPeer && (
+                                        <button
+                                            onClick={(ev) => closeTab(ev, tab.id)}
+                                            className="ml-1 text-gray-400 hover:text-red-600 text-xs"
+                                            title="Close tab"
+                                        >
+                                            ✕
+                                        </button>
+                                    )}
+                                </div>
+                            )
+                        })}
+                    </div>
+                </div>
+            </div>
+
+            {/* Main Content Area */}
+            <div className="flex flex-1 overflow-hidden">
+                <main className="flex-1 flex flex-col overflow-hidden">
+                    <Suspense fallback={<LoadingFallback />}>
+                        {renderContent()}
+                    </Suspense>
+                </main>
+            </div>
+        </div>
+    )
 }

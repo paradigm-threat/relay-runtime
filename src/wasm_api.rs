@@ -21,7 +21,9 @@ use std::collections::HashMap;
 use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use wasm_bindgen::prelude::*;
+use wasm_bindgen::JsCast;
 use web_sys::window;
+
 
 thread_local! {
     static INJECTED_CSS: RefCell<String> = RefCell::new(String::new());
@@ -213,8 +215,10 @@ pub fn run_hook_with_host(
         log_error(&msg);
         JsValue::from_str(&msg)
     })?;
+    run_state::clear_handler_registry_for_vnode_pass();
     let vnode = value_to_vnode_with_handlers(&result, &mut |v| run_state::register_handler(v)).normalize();
-    let (resolved, inject_css, state_json) = resolve_vnode_styles(vnode, theme_yaml, Platform::Web, 1.0, None, false);
+    let (resolved, inject_css, state_json) =
+        resolve_vnode_styles(vnode, theme_yaml, Platform::Web, 1.0, 1.0, None, false);
     if let Some(css) = inject_css {
         INJECTED_CSS.with(|c| *c.borrow_mut() = css);
     }
@@ -274,6 +278,18 @@ pub fn get_themes() -> String {
             get_theme_list_json(state.as_str())
         }
     })
+}
+
+/// Parse Markdown to a JSON AST using **md2ast** (same crate as gateway should use for parity).
+///
+/// Returns a JSON array of tagged nodes (`{ "type": "element", ... }` | `{ "type": "text", ... }`).
+/// `allowed_html_tags_json` is a JSON array of lowercase tag names for inline HTML in markdown
+/// (e.g. `["span","div","math"]`). Use `[]` to disallow raw HTML tags in source.
+#[wasm_bindgen]
+pub fn markdown_to_ast_json(markdown: &str, allowed_html_tags_json: &str) -> Result<String, JsValue> {
+    let options =
+        crate::markdown_host::transpile_options_from_allowed_json(allowed_html_tags_json);
+    crate::markdown_host::markdown_to_ast_json(markdown, &options).map_err(|e| JsValue::from_str(&e))
 }
 
 fn do_post_message_to_host(payload_json: &str) -> Result<(), String> {
@@ -366,7 +382,7 @@ fn themed_styler_module() -> Value {
     let mut obj = HashMap::new();
     obj.insert(
         "get_default_state_json".to_string(),
-        Value::Native(|args: &[Value]| {
+        Value::Native(|_args: &[Value]| {
             let s = get_default_state_json();
             Ok(Value::String(s))
         }),
@@ -738,6 +754,29 @@ fn relay_runtime_module() -> Value {
     Value::Object(obj)
 }
 
+/// Call `globalThis.__relay_host_fetch(url, initJson)` installed by relay-client-web.
+/// Returns a JSON string parsed into [`Value`] (must include `ok`, `status`, `text` per [`Host::fetch`]).
+fn wasm_host_fetch_via_js(url: &str, options: Option<&Value>) -> Result<Value, String> {
+    let init_json = crate::host::fetch_options_json(options);
+    let g = js_sys::global();
+    let key = JsValue::from_str("__relay_host_fetch");
+    let v = js_sys::Reflect::get(&g, &key).map_err(|_| "Reflect.get __relay_host_fetch failed".to_string())?;
+    if v.is_undefined() || v.is_null() {
+        return Err("__relay_host_fetch is not defined (installRelayHostFetch from relay-runtime-web)".to_string());
+    }
+    let func = v
+        .dyn_into::<js_sys::Function>()
+        .map_err(|_| "__relay_host_fetch is not a function".to_string())?;
+    let r = func
+        .call2(&JsValue::NULL, &JsValue::from_str(url), &JsValue::from_str(&init_json))
+        .map_err(|e| format!("__relay_host_fetch threw: {:?}", e))?;
+    let s = r
+        .as_string()
+        .ok_or_else(|| "__relay_host_fetch must return a JSON string".to_string())?;
+    let j: serde_json::Value = serde_json::from_str(&s).map_err(|e| e.to_string())?;
+    Ok(Value::from_json(&j))
+}
+
 /// Host that adds @theme, @hooks, relay-runtime/themed-styler, and @clevertree/relay-runtime.
 struct WasmHost {
     inner: HostHandle,
@@ -746,8 +785,17 @@ struct WasmHost {
 }
 
 impl Host for WasmHost {
+    fn log(&self, level: &str, message: &str) {
+        let line = format!("[hook] {}", message);
+        match level {
+            "warn" => console_warn(&line),
+            "error" => console_error(&line),
+            _ => console_log(&line),
+        }
+    }
+
     fn fetch(&self, url: &str, options: Option<&Value>) -> Result<Value, String> {
-        self.inner.borrow().fetch(url, options)
+        wasm_host_fetch_via_js(url, options)
     }
     fn navigate(&self, path: &str) -> Result<(), String> {
         self.inner.borrow().navigate(path)
@@ -783,6 +831,13 @@ impl Host for WasmHost {
         }
         if path == "@clevertree/relay-runtime" || path == "relay-runtime" {
             return Ok(relay_runtime_module());
+        }
+        if path == "@clevertree/markdown"
+            || path == "@clevertree/markdown.js"
+            || path == "@clevertree/hook-transpiler"
+            || path == "@clevertree/hook-transpiler.js"
+        {
+            return Ok(crate::markdown_host::markdown_module());
         }
         self.inner.borrow().load_module(path)
     }

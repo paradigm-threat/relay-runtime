@@ -201,6 +201,7 @@ pub enum BinaryOp {
 pub enum UnaryOp {
     Not,
     Neg,
+    Typeof,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

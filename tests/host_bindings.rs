@@ -46,6 +46,29 @@ export default function App() {
 }
 
 #[test]
+fn host_console_log_forwards_to_host() {
+    let source = r#"
+export default function App() {
+  console.log("hello", 42)
+  return null
+}
+"#;
+    let program = parse(source).unwrap();
+    let analysis = analyze(&program).unwrap();
+    let mock = MockHost::new();
+    let mut runtime = Runtime::new(program, analysis).with_host(mock.clone());
+
+    runtime.run().unwrap();
+
+    let host = mock.borrow();
+    let logs = host.log_calls.borrow();
+    assert_eq!(logs.len(), 1);
+    assert_eq!(logs[0].0, "log");
+    assert!(logs[0].1.contains("hello"));
+    assert!(logs[0].1.contains("42"));
+}
+
+#[test]
 fn host_navigate() {
     let source = r#"
 export default function App() {

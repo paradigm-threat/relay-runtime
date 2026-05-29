@@ -18,6 +18,28 @@ export interface BootstrapOptions {
 export function bootstrap(options?: BootstrapOptions): Promise<void>;
 
 /**
+ * Options for renderHook().
+ */
+export interface RenderHookOptions {
+  hookPath?: string;
+  host?: string;
+  baseUrl?: string;
+}
+
+/**
+ * Run a hook (local or remote) and render into container. Used by relay-hook-renderer.
+ */
+export function renderHook(
+  container: HTMLElement,
+  options?: RenderHookOptions
+): Promise<void>;
+
+/**
+ * Resolve a hook/manifest path against a base URL (absolute, root-relative, relative).
+ */
+export function resolveHookUrl(baseUrl: string, path: string): string;
+
+/**
  * Convert VNode JSON to DOM nodes.
  */
 export function vnodeToDom(v: unknown): DocumentFragment | HTMLElement | Text | null;

@@ -41,15 +41,23 @@ impl Platform {
 /// style (no cascading). Returns (resolved VNode, None, optional state JSON for getThemes).
 /// - theme_name: "light", "dark", or "default" (uses prefers_dark for default)
 /// - prefers_dark: when theme_name is "default", picks light vs dark
+/// - scaled_density: Android `scaledDensity` for sp→px; often equals display_density on web.
 pub fn resolve_vnode_styles(
     vnode: VNode,
     theme_yaml: &str,
     platform: Platform,
     display_density: f32,
+    scaled_density: f32,
     theme_name: Option<&str>,
     prefers_dark: bool,
 ) -> (VNode, Option<String>, Option<String>) {
-    let state = build_styler_state(theme_yaml, display_density, theme_name, prefers_dark);
+    let state = build_styler_state(
+        theme_yaml,
+        display_density,
+        scaled_density,
+        theme_name,
+        prefers_dark,
+    );
     let resolved = resolve_element_styles_rec(vnode, &state, platform);
     let state_json = serde_json::to_string(&state.to_json()).unwrap_or_default();
     (resolved, None, Some(state_json))
@@ -135,6 +143,7 @@ fn resolve_element_styles_rec(
 fn build_styler_state(
     theme_yaml: &str,
     display_density: f32,
+    scaled_density: f32,
     theme_name: Option<&str>,
     prefers_dark: bool,
 ) -> themed_styler::State {
@@ -148,7 +157,7 @@ fn build_styler_state(
     };
     let mut state = themed_styler::build_state_from_theme_json(&theme_json);
     state.display_density = display_density;
-    state.scaled_density = display_density;
+    state.scaled_density = scaled_density;
     if let Some(name) = theme_name {
         let name = name.trim().to_lowercase();
         if !name.is_empty() && state.themes.contains_key(&name) {

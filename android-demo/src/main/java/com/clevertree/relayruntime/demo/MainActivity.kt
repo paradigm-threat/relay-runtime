@@ -12,7 +12,10 @@ class MainActivity : AppCompatActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         val hookRenderer = HookRenderer(this).apply {
-            hookPath = "hooks/app.jsx"
+            hookPath = intent.getStringExtra("RELAY_HOOK_PATH") ?: "hooks/app.jsx"
+            intent.getStringExtra("RELAY_REMOTE_HOST")?.trim()?.takeIf { it.isNotEmpty() }?.let { h ->
+                host = h
+            }
             layoutParams = android.view.ViewGroup.LayoutParams(
                 android.view.ViewGroup.LayoutParams.MATCH_PARENT,
                 android.view.ViewGroup.LayoutParams.MATCH_PARENT

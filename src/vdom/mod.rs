@@ -162,16 +162,22 @@ where
             }) == Some("element") {
                 None
             } else if obj.keys().any(|k| {
-                ["color", "padding", "margin", "backgroundColor", "fontSize"].contains(&k.as_str())
+                [
+                    "color", "backgroundColor", "fontSize", "fontWeight",
+                    "padding", "paddingTop", "paddingBottom", "paddingLeft", "paddingRight",
+                    "margin", "marginTop", "marginBottom", "marginLeft", "marginRight",
+                ]
+                .contains(&k.as_str())
             }) {
                 let style: HashMap<String, String> = obj
                     .iter()
                     .filter_map(|(k, v)| {
-                        if let Value::String(s) = v {
-                            Some((k.clone(), s.clone()))
-                        } else {
-                            None
-                        }
+                        let s = match v {
+                            Value::String(s) => s.clone(),
+                            Value::Number(n) => n.to_string(),
+                            _ => return None,
+                        };
+                        Some((k.clone(), s))
                     })
                     .collect();
                 Some(PropValue::Style(style))
@@ -179,7 +185,7 @@ where
                 None
             }
         }
-        Value::Function { .. } | Value::Native(_) | Value::Setter(_) => {
+        Value::Function { .. } | Value::Native(_) | Value::NativeFn(_) | Value::Setter(_) => {
             let id = register(v);
             if id == 0 {
                 Some(PropValue::Handler)

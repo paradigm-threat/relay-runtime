@@ -85,3 +85,14 @@ export default function App() {
     let text = run_and_text(source);
     assert_eq!(text, "20");
 }
+
+#[test]
+fn string_to_lowercase_and_to_uppercase() {
+    let source = r#"
+export default function App() {
+  return <div>{'aBc'.toLowerCase() + '|' + 'xYz'.toUpperCase()}</div>
+}
+"#;
+    let text = run_and_text(source);
+    assert_eq!(text, "abc|XYZ");
+}

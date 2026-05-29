@@ -1,10 +1,16 @@
 {
   "hooks": [
-    { "id": "cleverscript-features", "name": "CleverScript Features", "path": "./hooks/cleverscript-features.jsx" },
-    { "id": "simple-jsx", "name": "Simple JSX", "path": "./hooks/simple-jsx.jsx" },
-    { "id": "style-keywords", "name": "Style Keywords", "path": "./hooks/style-keywords.jsx" },
-    { "id": "nested-structure", "name": "Nested Structure", "path": "./hooks/nested-structure.jsx" },
-    { "id": "string-keywords", "name": "String Keywords", "path": "./hooks/string-keywords.jsx" },
-    { "id": "use-state-demo", "name": "useState Demo", "path": "./hooks/use-state-demo.jsx" }
+    { "id": "app", "name": "App", "path": "hooks/app.jsx" },
+    { "id": "home", "name": "Home", "path": "hooks/home.jsx" },
+    { "id": "settings", "name": "Settings", "path": "hooks/settings.jsx" },
+    { "id": "peerContent", "name": "PeerContent", "path": "hooks/peerContent.jsx" },
+    { "id": "demo", "name": "Demo", "path": "hooks/demo.jsx" },
+    { "id": "use-state-demo", "name": "useState Demo", "path": "hooks/use-state-demo.jsx" },
+    { "id": "style-keywords", "name": "Style Keywords", "path": "hooks/style-keywords.jsx" },
+    { "id": "cleverscript-features", "name": "CleverScript Features", "path": "hooks/cleverscript-features.jsx" },
+    { "id": "simple-jsx", "name": "Simple JSX", "path": "hooks/simple-jsx.jsx" },
+    { "id": "nested-structure", "name": "Nested Structure", "path": "hooks/nested-structure.jsx" },
+    { "id": "string-keywords", "name": "String Keywords", "path": "hooks/string-keywords.jsx" },
+    { "id": "minimal-app", "name": "Minimal App", "path": "hooks/minimal-app.jsx" }
   ]
 }

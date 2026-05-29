@@ -71,12 +71,22 @@ impl ParseErrorDetail {
     }
 }
 
+/// Runtime error with call stack and locals for debugging (Tier 1).
+#[derive(Debug, Clone)]
+pub struct RuntimeErrorDetail {
+    pub message: String,
+    pub call_stack: Vec<String>,
+    pub locals: serde_json::Map<String, serde_json::Value>,
+}
+
 #[derive(Debug, Clone)]
 pub enum RuntimeError {
     Parse(String),
     ParseDetail(ParseErrorDetail),
     Ir(String),
     Runtime(String),
+    /// Runtime error with call stack and locals snapshot for host debug UI.
+    RuntimeDetail(RuntimeErrorDetail),
     Host(String),
 }
 
@@ -87,12 +97,63 @@ impl fmt::Display for RuntimeError {
             RuntimeError::ParseDetail(d) => write!(f, "Parse error: {}", d.display()),
             RuntimeError::Ir(s) => write!(f, "IR error: {}", s),
             RuntimeError::Runtime(s) => write!(f, "Runtime error: {}", s),
+            RuntimeError::RuntimeDetail(d) => {
+                write!(f, "Runtime error: {}", d.message)?;
+                if !d.call_stack.is_empty() {
+                    write!(f, " (at {})", d.call_stack.join(" → "))?;
+                }
+                Ok(())
+            }
             RuntimeError::Host(s) => write!(f, "Host error: {}", s),
         }
     }
 }
 
 impl std::error::Error for RuntimeError {}
+
+/// JSON for host error UI. Contract: { type, message, file?, line?, column?, source_line? }
+impl RuntimeError {
+    pub fn to_error_json(&self) -> serde_json::Value {
+        let mut obj = serde_json::Map::new();
+        match self {
+            RuntimeError::Parse(s) => {
+                obj.insert("type".to_string(), serde_json::json!("parse"));
+                obj.insert("message".to_string(), serde_json::Value::String(s.clone()));
+            }
+            RuntimeError::ParseDetail(d) => {
+                obj.insert("type".to_string(), serde_json::json!("parse"));
+                obj.insert("message".to_string(), serde_json::Value::String(d.message.clone()));
+                if let Some(ref f) = d.loc.file {
+                    obj.insert("file".to_string(), serde_json::Value::String(f.clone()));
+                }
+                obj.insert("line".to_string(), serde_json::json!(d.loc.line));
+                obj.insert("column".to_string(), serde_json::json!(d.loc.column));
+                if let Some(ref s) = d.source_line {
+                    obj.insert("source_line".to_string(), serde_json::Value::String(s.clone()));
+                }
+            }
+            RuntimeError::Ir(s) | RuntimeError::Runtime(s) | RuntimeError::Host(s) => {
+                obj.insert("type".to_string(), serde_json::json!("runtime"));
+                obj.insert("message".to_string(), serde_json::Value::String(s.clone()));
+            }
+            RuntimeError::RuntimeDetail(d) => {
+                obj.insert("type".to_string(), serde_json::json!("runtime"));
+                obj.insert("message".to_string(), serde_json::Value::String(d.message.clone()));
+                obj.insert(
+                    "call_stack".to_string(),
+                    serde_json::Value::Array(
+                        d.call_stack
+                            .iter()
+                            .map(|s| serde_json::Value::String(s.clone()))
+                            .collect(),
+                    ),
+                );
+                obj.insert("locals".to_string(), serde_json::Value::Object(d.locals.clone()));
+            }
+        }
+        serde_json::Value::Object(obj)
+    }
+}
 
 /// Convert character offset (0-based) to 1-based (line, column).
 pub fn line_col_for_offset(source: &str, offset: usize) -> (u32, u32) {

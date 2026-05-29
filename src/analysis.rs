@@ -32,11 +32,12 @@ pub struct HookCallSite {
     pub hook_name: String,
 }
 
-const HOOK_NAMES: &[&str] = &["useState", "useEffect", "useCallback"];
+const HOOK_NAMES: &[&str] = &["useState", "useEffect", "useCallback", "useRef"];
 
 /// Analyze program and produce metadata.
 pub fn analyze(program: &Program) -> Result<AnalysisResult, RuntimeError> {
     check_undefined_variables(program)?;
+    check_map_keys(program)?;
     let mut result = AnalysisResult::default();
     let mut component_names = Vec::new();
 
@@ -267,6 +268,250 @@ fn hook_name_from_callee(callee: &Expr) -> Option<String> {
     }
 }
 
+/// Check that arr.map(fn) callbacks returning JSX include a key prop. Fails analysis if missing.
+fn check_map_keys(program: &Program) -> Result<(), RuntimeError> {
+    for stmt in &program.body {
+        check_map_keys_in_stmt(stmt)?;
+    }
+    Ok(())
+}
+
+fn check_map_keys_in_stmt(stmt: &Statement) -> Result<(), RuntimeError> {
+    match stmt {
+        Statement::VariableDecl { declarations, .. } => {
+            for decl in declarations {
+                if let Some(init) = &decl.init {
+                    check_map_keys_in_expr(init)?;
+                }
+            }
+        }
+        Statement::Return { argument } => {
+            if let Some(expr) = argument {
+                check_map_keys_in_expr(expr)?;
+            }
+        }
+        Statement::Expr { expression } => check_map_keys_in_expr(expression)?,
+        Statement::If {
+            test,
+            consequent,
+            alternate,
+            ..
+        } => {
+            check_map_keys_in_expr(test)?;
+            for s in consequent {
+                check_map_keys_in_stmt(s)?;
+            }
+            if let Some(alt) = alternate {
+                for s in alt {
+                    check_map_keys_in_stmt(s)?;
+                }
+            }
+        }
+        Statement::For { init, test, update, body, .. } => {
+            if let Some(i) = init {
+                check_map_keys_in_stmt(i)?;
+            }
+            if let Some(t) = test {
+                check_map_keys_in_expr(t)?;
+            }
+            for s in body {
+                check_map_keys_in_stmt(s)?;
+            }
+            if let Some(u) = update {
+                check_map_keys_in_expr(u)?;
+            }
+        }
+        Statement::While { test, body } => {
+            check_map_keys_in_expr(test)?;
+            for s in body {
+                check_map_keys_in_stmt(s)?;
+            }
+        }
+        Statement::Try {
+            block,
+            handler,
+            finalizer,
+            ..
+        } => {
+            for s in block {
+                check_map_keys_in_stmt(s)?;
+            }
+            if let Some(h) = handler {
+                for s in &h.body {
+                    check_map_keys_in_stmt(s)?;
+                }
+            }
+            if let Some(f) = finalizer {
+                for s in f {
+                    check_map_keys_in_stmt(s)?;
+                }
+            }
+        }
+        Statement::ExportDefault { declaration } => {
+            if let ExportDefaultDecl::Function { body, .. } = declaration.as_ref() {
+                for s in body {
+                    check_map_keys_in_stmt(s)?;
+                }
+            }
+        }
+        Statement::ExportNamed { declaration } => {
+            let ExportNamedDecl::Function { body, .. } = declaration;
+            for s in body {
+                check_map_keys_in_stmt(s)?;
+            }
+        }
+        Statement::FunctionDecl { body, .. } => {
+            for s in body {
+                check_map_keys_in_stmt(s)?;
+            }
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+fn check_map_keys_in_expr(expr: &Expr) -> Result<(), RuntimeError> {
+    match expr {
+        Expr::Call { callee, arguments, .. } => {
+            // Check for arr.map(callback) - callback returning JSX must have key
+            if let Expr::Member {
+                object: _,
+                property,
+                optional: false,
+            } = callee.as_ref()
+            {
+                if let Expr::Identifier { name } = property.as_ref() {
+                    if name == "map" {
+                        if let Some(cb) = arguments.first() {
+                            if let Expr::ArrowFunction { body, .. } = cb {
+                                let return_expr = match body {
+                                    ArrowBody::Expr(e) => Some(e.as_ref()),
+                                    ArrowBody::Block(stmts) => stmts.iter().find_map(|s| {
+                                        if let Statement::Return {
+                                            argument: Some(arg),
+                                        } = s
+                                        {
+                                            Some(arg.as_ref())
+                                        } else {
+                                            None
+                                        }
+                                    }),
+                                };
+                                if let Some(re) = return_expr {
+                                    if expr_returns_jsx(re) && !jsx_has_key(re) {
+                                        return Err(RuntimeError::Ir(
+                                            "arr.map() callback returning JSX must include key prop on the returned element (e.g. <Item key={item.id} />)".to_string(),
+                                        ));
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            for arg in arguments {
+                check_map_keys_in_expr(arg)?;
+            }
+        }
+        Expr::JsxElement(el) => {
+            for prop in &el.props {
+                if let JsxProp::Attribute {
+                    value: JsxAttrValue::Expr(e),
+                    ..
+                } = prop
+                {
+                    check_map_keys_in_expr(e)?;
+                }
+            }
+            for child in &el.children {
+                match child {
+                    JsxChild::Expr(e) => check_map_keys_in_expr(e)?,
+                    JsxChild::Element(inner) => {
+                        for prop in &inner.props {
+                            if let JsxProp::Attribute {
+                                value: JsxAttrValue::Expr(e),
+                                ..
+                            } = prop
+                            {
+                                check_map_keys_in_expr(e)?;
+                            }
+                        }
+                        for c in &inner.children {
+                            if let JsxChild::Expr(e) = c {
+                                check_map_keys_in_expr(e)?;
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+        Expr::JsxFragment { children } => {
+            for c in children {
+                if let JsxChild::Expr(e) = c {
+                    check_map_keys_in_expr(e)?;
+                }
+            }
+        }
+        Expr::Binary { left, right, .. } => {
+            check_map_keys_in_expr(left)?;
+            check_map_keys_in_expr(right)?;
+        }
+        Expr::Conditional {
+            test,
+            consequent,
+            alternate,
+            ..
+        } => {
+            check_map_keys_in_expr(test)?;
+            check_map_keys_in_expr(consequent)?;
+            check_map_keys_in_expr(alternate)?;
+        }
+        Expr::Array { elements } => {
+            for e in elements {
+                check_map_keys_in_expr(e)?;
+            }
+        }
+        Expr::Object { properties } => {
+            for p in properties {
+                match p {
+                    ObjectExprProp::KeyValue { value, .. } => check_map_keys_in_expr(value)?,
+                    ObjectExprProp::Spread { argument } => check_map_keys_in_expr(argument)?,
+                }
+            }
+        }
+        Expr::ArrowFunction { body, .. } => {
+            match body {
+                ArrowBody::Expr(e) => check_map_keys_in_expr(e)?,
+                ArrowBody::Block(stmts) => {
+                    for s in stmts {
+                        check_map_keys_in_stmt(s)?;
+                    }
+                }
+            }
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+/// True if the JSX expression has a key prop (for map callback validation).
+fn jsx_has_key(expr: &Expr) -> bool {
+    match expr {
+        Expr::JsxElement(el) => el
+            .props
+            .iter()
+            .any(|p| matches!(p, JsxProp::Attribute { name, .. } if name == "key")),
+        Expr::Conditional {
+            consequent,
+            alternate,
+            ..
+        } => jsx_has_key(consequent) && jsx_has_key(alternate),
+        Expr::JsxFragment { .. } => false, // Fragments don't have keys; wrapped element should
+        _ => true, // Non-JSX, no key required
+    }
+}
+
 fn collect_hook_calls_in_expr(expr: &Expr, out: &mut Vec<HookCallSite>, slot: &mut usize) {
     match expr {
         Expr::Call { callee, arguments, .. } => {
@@ -361,8 +606,33 @@ fn collect_hook_calls_in_expr(expr: &Expr, out: &mut Vec<HookCallSite>, slot: &m
 fn check_undefined_variables(program: &Program) -> Result<(), RuntimeError> {
     let mut scope: Vec<HashSet<String>> = vec![HashSet::new()];
     // Host-injected bindings - provided by host at runtime
-    for name in ["params", "env", "navigate", "createElement", "fetch", "useState", "useEffect", "useCallback"] {
+    for name in ["params", "env", "navigate", "createElement", "fetch", "useState", "useEffect", "useCallback", "useRef", "localStorage", "lazy", "Suspense", "globalThis", "JSON", "Object", "Array", "Promise", "Error", "Date", "AbortSignal", "console", "document", "alert", "setInterval", "clearInterval", "Relay"] {
         scope.last_mut().unwrap().insert(name.to_string());
+    }
+
+    // Hoist top-level function names so sibling helpers can call each other (matches JS function-decl hoisting).
+    for stmt in &program.body {
+        match stmt {
+            Statement::FunctionDecl {
+                id: Some(name), ..
+            } => {
+                scope.last_mut().unwrap().insert(name.clone());
+            }
+            Statement::ExportNamed {
+                declaration: ExportNamedDecl::Function { id, .. },
+            } => {
+                scope.last_mut().unwrap().insert(id.clone());
+            }
+            Statement::ExportDefault { declaration } => {
+                if let ExportDefaultDecl::Function {
+                    id: Some(name), ..
+                } = declaration.as_ref()
+                {
+                    scope.last_mut().unwrap().insert(name.clone());
+                }
+            }
+            _ => {}
+        }
     }
 
     for stmt in &program.body {

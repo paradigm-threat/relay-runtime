@@ -18,7 +18,7 @@ We **do not** implement full ES6. We only support what relay-template actually u
 
 | Feature | Used in |
 |---------|---------|
-| **async/await** | get-client, query-client, plugins |
+| **async/await** | get hook, query-client, plugins |
 | **import/export** | All modules |
 | **Dynamic import** | `await import('./plugin/tmdb.mjs')` |
 | **const, let** | All files |
@@ -59,7 +59,7 @@ If a feature is not clearly used in relay-template, **ask** before implementing.
 
 | File | Features Required |
 |------|-------------------|
-| `get-client.jsx` | useState, useEffect, useCallback, fetch, fetchRelative, dynamic import, MarkdownRenderer, theme, url, Layout, plugins, path routing |
+| `get.jsx` | useState, useEffect, useCallback, fetch, fetchRelative, dynamic import, MarkdownRenderer, theme, url, Layout, plugins, path routing |
 | `query-client.jsx` | async component, fetch(QUERY), dynamic import, JSX, params, navigate, env |
 | `components/Layout.jsx` | function component, form, input, select, button, onSubmit, onChange, className |
 | `components/MovieResults.jsx` | renderMovieResults, map, key, onClick, onMouseEnter, style, conditional JSX |
@@ -238,7 +238,7 @@ If a feature is not clearly used in relay-template, **ask** before implementing.
 
 ## Phase 7: Full Integration
 
-**Scope**: Run `get-client.jsx`, `query-client.jsx`, and all components end-to-end.
+**Scope**: Run `get.jsx`, `query-client.jsx`, and all components end-to-end.
 
 ### 7.0 Fixture layout (in progress) ✅
 - `tests/fixtures/client/components/Layout.jsx` — copy of relay-template Layout (parse test **ignored** until parser handles `!`, optional chain, default params, etc.)
@@ -248,7 +248,7 @@ If a feature is not clearly used in relay-template, **ask** before implementing.
 
 | Test | Fixture | Assertions |
 |------|---------|------------|
-| `e2e_get_client` | get-client.jsx + mock server | Renders Layout, routes work |
+| `e2e_get_client` | get.jsx + mock server | Renders Layout, routes work |
 | `e2e_query_client` | query-client.jsx + mock TMDB | Search returns results UI |
 | `e2e_layout` | Layout.jsx | Form submit, branch select |
 | `e2e_movie_results` | MovieResults.jsx | List renders, View button works |
@@ -268,7 +268,7 @@ relay-runtime/
   tests/
     fixtures/
       client/           # From relay-template/hooks/client
-        get-client.jsx
+        get.jsx
         query-client.jsx
         components/
         plugin/

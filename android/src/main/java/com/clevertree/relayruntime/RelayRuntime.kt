@@ -20,7 +20,9 @@ object RelayRuntime {
         hooksManifestJson: String,
         file: String,
         themeName: String,
-        prefersDark: Boolean
+        prefersDark: Boolean,
+        displayDensity: Float,
+        scaledDensity: Float,
     ): String?
 
     /**
@@ -66,9 +68,21 @@ object RelayRuntime {
         hooksManifestJson: String = "{}",
         file: String = "",
         themeName: String = "",
-        prefersDark: Boolean = false
+        prefersDark: Boolean = false,
+        displayDensity: Float = 2f,
+        scaledDensity: Float = 2f,
     ): String {
-        return nativeRunHookWithHost(source, moduleMapJson, themeYaml, hooksManifestJson, file, themeName, prefersDark)
+        return nativeRunHookWithHost(
+            source,
+            moduleMapJson,
+            themeYaml,
+            hooksManifestJson,
+            file,
+            themeName,
+            prefersDark,
+            displayDensity,
+            scaledDensity,
+        )
             ?: throw RuntimeException("runHookWithHost returned null")
     }
 

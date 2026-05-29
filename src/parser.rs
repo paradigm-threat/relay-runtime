@@ -136,6 +136,7 @@ fn is_expression_start(stream: &TokenStream) -> bool {
             | Token::LBrack
             | Token::LCurly
             | Token::Keyword(Keyword::Import)
+            | Token::Typeof
     )
 }
 
@@ -485,7 +486,7 @@ fn parse_params(stream: &mut TokenStream) -> Result<Vec<Param>, RuntimeError> {
     Ok(params)
 }
 
-/// Parse arrow function params: ident (',' ident)* ')' — consumes up to and including ')'.
+/// Parse arrow function params: ident (',' ident)* ')' or single ident '=>'.
 fn parse_arrow_params(stream: &mut TokenStream) -> Result<Vec<Param>, RuntimeError> {
     let mut params = Vec::new();
     loop {
@@ -506,7 +507,7 @@ fn parse_arrow_params(stream: &mut TokenStream) -> Result<Vec<Param>, RuntimeErr
             None
         };
         params.push(Param { name, rest: false, type_annotation });
-        if eat_token(stream, Token::RParen) {
+        if eat_token(stream, Token::RParen) || stream.peek() == &Token::Arrow {
             break;
         }
         expect_token(stream, Token::Comma)?;
@@ -546,10 +547,13 @@ fn parse_if(stream: &mut TokenStream) -> Result<Statement, RuntimeError> {
         vec![parse_statement(stream)?]
     };
     let alternate = if eat_token(stream, Token::Keyword(Keyword::Else)) {
-        expect_token(stream, Token::LCurly)?;
-        let alt = parse_block(stream)?;
-        expect_token(stream, Token::RCurly)?;
-        Some(alt)
+        if eat_token(stream, Token::LCurly) {
+            let alt = parse_block(stream)?;
+            expect_token(stream, Token::RCurly)?;
+            Some(alt)
+        } else {
+            Some(vec![parse_statement(stream)?])
+        }
     } else {
         None
     };
@@ -801,6 +805,20 @@ fn parse_binary_multiplicative(stream: &mut TokenStream) -> Result<Expr, Runtime
 }
 
 fn parse_unary(stream: &mut TokenStream) -> Result<Expr, RuntimeError> {
+    if eat_token(stream, Token::Typeof) {
+        let arg = parse_unary(stream)?;
+        return Ok(Expr::Unary {
+            op: UnaryOp::Typeof,
+            argument: Box::new(arg),
+        });
+    }
+    if eat_token(stream, Token::Bang) {
+        let arg = parse_unary(stream)?;
+        return Ok(Expr::Unary {
+            op: UnaryOp::Not,
+            argument: Box::new(arg),
+        });
+    }
     if eat_token(stream, Token::Sub) {
         let arg = parse_unary(stream)?;
         return Ok(Expr::Unary {
@@ -840,6 +858,12 @@ fn parse_postfix(stream: &mut TokenStream) -> Result<Expr, RuntimeError> {
                 stream.next();
                 let name = if eat_token(stream, Token::Keyword(Keyword::Default)) {
                     "default".to_string()
+                } else if eat_token(stream, Token::Keyword(Keyword::Catch)) {
+                    "catch".to_string()
+                } else if eat_token(stream, Token::Keyword(Keyword::Finally)) {
+                    "finally".to_string()
+                } else if eat_token(stream, Token::Keyword(Keyword::From)) {
+                    "from".to_string()
                 } else {
                     expect_ident(stream)?
                 };
@@ -928,6 +952,14 @@ fn parse_primary(stream: &mut TokenStream) -> Result<Expr, RuntimeError> {
         Token::Ident(ref name) => {
             let name = name.clone();
             stream.next();
+            if stream.peek() == &Token::Arrow {
+                stream.next(); // consume =>
+                let body = parse_arrow_body(stream)?;
+                return Ok(Expr::ArrowFunction {
+                    params: vec![Param { name, rest: false, type_annotation: None }],
+                    body,
+                });
+            }
             Ok(Expr::Identifier { name })
         }
         Token::LParen => {
@@ -997,8 +1029,11 @@ fn parse_object(stream: &mut TokenStream) -> Result<Expr, RuntimeError> {
             return Err(stream.parse_error("CleverScript: object spread not supported"));
         } else {
             let key = expect_ident(stream)?;
-            expect_token(stream, Token::Colon)?;
-            let value = Box::new(parse_expression(stream)?);
+            let value = if eat_token(stream, Token::Colon) {
+                Box::new(parse_expression(stream)?)
+            } else {
+                Box::new(Expr::Identifier { name: key.clone() })
+            };
             properties.push(ObjectExprProp::KeyValue { key, value });
         }
         eat_token(stream, Token::Comma);
@@ -1149,9 +1184,13 @@ fn parse_jsx_children(
             }
             Token::LCurly => {
                 stream.next();
-                let expr = parse_expression(stream)?;
-                expect_token(stream, Token::RCurly)?;
-                children.push(JsxChild::Expr(Box::new(expr)));
+                if stream.peek() == &Token::RCurly {
+                    stream.next();
+                } else {
+                    let expr = parse_expression(stream)?;
+                    expect_token(stream, Token::RCurly)?;
+                    children.push(JsxChild::Expr(Box::new(expr)));
+                }
             }
             Token::Eof => break,
             Token::Ident(ref s) => {

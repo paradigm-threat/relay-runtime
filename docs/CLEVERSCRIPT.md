@@ -6,6 +6,12 @@ CleverScript is the JS-like language executed by **relay-runtime** for client ho
 
 ---
 
+## Server hooks (gateway)
+
+When CleverScript runs as **`server.hooks.*`** modules (`.cs`), the relay-gateway provides virtual modules **`@relay/git`** (`readFile`, `readFileBase64`) and, on GET / raster resize paths only, **`@relay/image`** (`toWebp`). Use top-level **`import { … } from '@relay/git'`** (and **`@relay/image`** where allowed). The global **`Relay`** is **`null`**; prefer imports for new scripts.
+
+---
+
 ## 1. Supported — Must Have
 
 ### 1.1 Literals
@@ -13,6 +19,8 @@ CleverScript is the JS-like language executed by **relay-runtime** for client ho
 - `null`, `true`, `false`
 - Numbers: `0`, `1.5`, `-3`
 - Strings: `"hello"`, `'world'`
+- **Template literals** `` `…${expr}…` `` — expanded at lex time to string literals and `+` (same meaning as concatenation). Static parts support escapes such as `` \` ``, `\${`, `\\`, `\n`, etc. **MVP caveat:** each `${…}` runs until a matching `}` by **brace depth only**; `{` / `}` inside `"strings"`, `'strings'`, nested `` `…` ``, or comments can confuse the scanner—extract a variable or use `+` for those cases.
+- **String instance helpers** (receiver must be a string): `split(sep?)`, `trim()`, `startsWith(prefix)`, `toLowerCase()`, `toUpperCase()` — useful in server hooks (e.g. case-insensitive file extensions).
 
 ### 1.2 Objects
 
@@ -52,6 +60,7 @@ CleverScript is the JS-like language executed by **relay-runtime** for client ho
 
 - `import x from 'source'` — default imports from host modules
 - Host provides: theme, styler, relayRuntime (getThemes, postMessage, getPendingMessages), etc.
+- **Client WASM / Android markdown:** `import { MarkdownRenderer } from '@clevertree/markdown'` — virtual module (not npm): named export **`MarkdownRenderer`** renders markdown to VDOM via **md2ast** built into relay-runtime. **`navigate`** is accepted for backward compatibility only; markdown links default to normal **`href`** navigation (same-origin absolute URLs are not intercepted automatically). For SPA-style routing per repo, pass **`anchorProps`** (shallow-merge object onto each parsed `<a>`) and/or **`anchorOnClick`** (`onClick` applied after merge; wins over `anchorProps.onClick`). The implementation avoids document-level delegated capture—only handlers you attach. **`@clevertree/hook-transpiler`** is an alias for the same module. IR and behavior: **`relay-gateway/docs/RELAY_MARKDOWN_IR.md`**.
 
 ### 1.8 React Hooks
 
@@ -65,22 +74,35 @@ CleverScript is the JS-like language executed by **relay-runtime** for client ho
 - Children: `{expr}` expressions
 - Props: `className`, `key`, `data-*`, etc.
 - No JSX spread: `<Foo {...props}` — pass props explicitly
+- **Templating with variables in JSX** — `{'Hello ' + name}` or `{part1}{part2}`; or use template literals for multi-line / markdown (see §1.1).
 
 ---
 
 ## 2. Explicitly Out of Scope
 
-### 2.1 Parser / Language Surface
+### 2.1 Optional: template literals vs JSX
+
+Template literals are supported (§1.1). For attribute values and short text, JSX with `+` is often clearer:
+
+| Style | Example |
+|-------|---------|
+| Template | `` `Hello ${name}` `` |
+| Concat | `'Hello ' + name` |
+| JSX | `{'Hello ' + name}` |
+
+---
+
+### 2.2 Parser / Language Surface
 
 | Construct | Status |
 |-----------|--------|
 | `==`, `!=` (loose equality) | Not supported — use `===`, `!==` only |
-| Template literals `` `${x}` `` | Not supported (or minimal only) |
+| Template literals `` `…${x}…` `` | Lowered to `+` at lex; MVP: `${…}` uses naive `{`/`}` depth (see §1.1) |
 | Object/array spread `{...a}`, `[...a]` | Not supported |
 | Complex destructuring | Not supported — simple `const {a} = obj` only |
 | `typeof`, `void`, `delete` | Not supported |
 
-### 2.2 Control Flow
+### 2.3 Control Flow
 
 | Construct | Status |
 |-----------|--------|
@@ -88,7 +110,7 @@ CleverScript is the JS-like language executed by **relay-runtime** for client ho
 | `do...while`, `switch` | Not supported — use `while` or `if/else` |
 | `try/catch` | Not supported |
 
-### 2.3 Objects
+### 2.4 Objects
 
 | Construct | Status |
 |-----------|--------|
@@ -96,7 +118,7 @@ CleverScript is the JS-like language executed by **relay-runtime** for client ho
 | Prototype chain, `__proto__` | Not supported |
 | `this` | Not supported |
 
-### 2.4 Functions and Modules
+### 2.5 Functions and Modules
 
 | Construct | Status |
 |-----------|--------|
@@ -104,14 +126,14 @@ CleverScript is the JS-like language executed by **relay-runtime** for client ho
 | Named exports | Single default export per module |
 | `arguments` object | Not supported |
 
-### 2.5 Arrays
+### 2.6 Arrays
 
 | Construct | Status |
 |-----------|--------|
 | `arr.push()`, `arr.pop()`, etc. | Not supported — use `concat` or host helpers |
 | Mutable array methods | Not supported — prefer immutable patterns |
 
-### 2.6 JSX
+### 2.7 JSX
 
 | Construct | Status |
 |-----------|--------|
@@ -140,6 +162,33 @@ Hooks can interact with the host via `window.postMessage` and `addEventListener(
 - **Static hook count:** analysis must know exact number of hooks per component
 - **No hooks in conditionals or loops:** hooks at top level only
 - **Dynamic imports:** resolve before hook execution so analysis sees all hooks
+- **`arr.map()` with JSX:** callbacks returning JSX **must** include a `key` prop on the returned element (e.g. `<Item key={item.id} />`). Analysis fails otherwise.
+
+---
+
+## 4.1 Runtime Limits and Safety
+
+To prevent hangs and memory exhaustion, the runtime enforces:
+
+| Limit | Value | Behavior |
+|-------|-------|----------|
+| **Loop iterations** | 100,000 | `for` and `while` abort with error if exceeded (possible infinite loop) |
+| **Recursion depth** | 256 | Function/component call depth; aborts to prevent stack overflow |
+| **Array length** | 50,000 | Array literals, `concat`, `map`, `filter`, `find` reject larger arrays |
+
+---
+
+## 4.2 Per-Component Error Boundary
+
+When a component throws during render, the runtime **does not** crash the whole tree. Instead, it renders a fallback UI for that component:
+
+- A `div` with `className="relay-error-boundary"`
+- `data-error-boundary` = component name
+- `data-error-message` = error message
+- Inline error styling (red border, light red background)
+- Text: `[ComponentName] error message`
+
+Siblings and parent components continue to render. This improves reliability compared to a single global crash.
 
 ---
 
@@ -162,7 +211,7 @@ Hooks can interact with the host via `window.postMessage` and `addEventListener(
 | Loops | `for (;;)`, `while` | `for...of`, `for...in`, `do...while` |
 | Objects | string keys, `obj.key` | computed keys, prototype, `this` |
 | Arrays | `length`, `[i]`, `concat` | `push`, `pop`, mutable methods |
-| JSX | elements, fragments, `{expr}` | spread `{...props}` |
+| JSX | elements, fragments, `{expr}` (templating), template literals for strings | spread `{...props}` |
 
 ---
 

@@ -246,7 +246,7 @@ class VNodeRenderer(private val context: Context) {
             text = "relay-hook-renderer: host prop required"
             setTextColor(Color.RED)
         }
-        val hookPath = propString(props, "hookPath") ?: "/hooks/client/get-client.jsx"
+        val hookPath = propString(props, "hookPath") ?: "/hooks/client/get.jsx"
         return HookRenderer(context).apply {
             this.host = host
             this.hookPath = hookPath

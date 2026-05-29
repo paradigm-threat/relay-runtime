@@ -1,3 +1,18 @@
 /target/
 *.rs.bk
 .DS_Store
+
+# Android
+/build/
+/android-demo/build/
+/android/build/
+/android/jniLibs/
+.gradle/
+*.apk
+
+# Local dev screenshots
+screenshot-*.png
+android-screenshot*.png
+
+# Machine-local cargo (NDK paths)
+.cargo/config.toml

@@ -1,6 +1,8 @@
 package com.clevertree.relayruntime.demo
 
 import android.content.Context
+import android.os.Handler
+import android.os.Looper
 import android.util.AttributeSet
 import android.util.Log
 import android.view.ViewGroup
@@ -11,7 +13,10 @@ import android.widget.TextView
 import com.clevertree.relayruntime.RelayRuntime
 import org.json.JSONArray
 import org.json.JSONObject
+import java.io.IOException
 import java.io.InputStreamReader
+import java.net.HttpURLConnection
+import java.net.URL
 
 /**
  * Core relay-runtime component: renders local or remote hooks.
@@ -29,6 +34,8 @@ class HookRenderer @JvmOverloads constructor(
         private const val TAG = "RelayDemo"
         private const val HOOKS_ASSET_DIR = "hooks"
     }
+
+    private val mainHandler = Handler(Looper.getMainLooper())
 
     private val scrollView: ScrollView
     private val container: FrameLayout
@@ -54,14 +61,12 @@ class HookRenderer @JvmOverloads constructor(
     var hookPath: String = "hooks/app.jsx"
         set(value) {
             field = value
-            runRender()
         }
 
-    /** Remote: base URL. When set, fetches hook from host (stub: not yet implemented). */
+    /** Remote: base URL (no trailing slash required). When non-null, [runRender] loads via HTTP. */
     var host: String? = null
         set(value) {
             field = value
-            if (value != null) runRender()
         }
 
     var onError: ((String) -> Unit)? = null
@@ -116,6 +121,7 @@ class HookRenderer @JvmOverloads constructor(
             val prefersDark = (context.resources.configuration.uiMode and
                 android.content.res.Configuration.UI_MODE_NIGHT_MASK) ==
                 android.content.res.Configuration.UI_MODE_NIGHT_YES
+            val dm = context.resources.displayMetrics
             val vnodeJson = RelayRuntime.runHookWithHost(
                 source = entrySource,
                 moduleMapJson = moduleMap.toString(),
@@ -123,7 +129,9 @@ class HookRenderer @JvmOverloads constructor(
                 hooksManifestJson = hooksManifest.toString(),
                 file = hookPath,
                 themeName = themeName,
-                prefersDark = prefersDark
+                prefersDark = prefersDark,
+                displayDensity = dm.density,
+                scaledDensity = dm.scaledDensity,
             )
             Log.i(TAG, "HookRenderer: hook OK")
             applyThemeToChrome()
@@ -140,8 +148,136 @@ class HookRenderer @JvmOverloads constructor(
     }
 
     private fun runRenderRemote() {
-        // TODO Phase F: fetch(host OPTIONS) → hookPath, fetch(host + path) → source, run
-        showError("Remote hooks not yet implemented (host=${host})")
+        val baseRaw = host?.trim().orEmpty()
+        if (baseRaw.isEmpty()) {
+            showError("Remote host URL is empty")
+            return
+        }
+        val base = baseRaw.trimEnd('/')
+        val baseDir = "$base/"
+
+        Thread {
+            try {
+                val themeName = RelayRuntime.getCurrentTheme()
+                val prefersDark = (context.resources.configuration.uiMode and
+                    android.content.res.Configuration.UI_MODE_NIGHT_MASK) ==
+                    android.content.res.Configuration.UI_MODE_NIGHT_YES
+                val dm = context.resources.displayMetrics
+
+                var themeYaml = ""
+                try {
+                    themeYaml = fetchUrlString(UrlResolve.resolve(baseDir, "theme.yaml"))
+                } catch (e: Exception) {
+                    Log.d(TAG, "remote theme.yaml optional: ${e.message}")
+                }
+
+                var hooksManifest = JSONObject().put("hooks", JSONArray())
+                try {
+                    val hj = fetchUrlString(UrlResolve.resolve(baseDir, "hooks.json"))
+                    hooksManifest = JSONObject(hj)
+                } catch (e: Exception) {
+                    Log.d(TAG, "remote hooks.json optional: ${e.message}")
+                }
+
+                val moduleMap = JSONObject()
+                fun putModule(pathKey: String, text: String) {
+                    val k = pathKey.trim()
+                    if (k.isEmpty()) return
+                    moduleMap.put(k, text)
+                    val n = UrlResolve.normalizeModuleKey(k)
+                    if (n.isNotEmpty() && n != k) {
+                        moduleMap.put(n, text)
+                    }
+                }
+                val hooksArray = hooksManifest.optJSONArray("hooks")
+                if (hooksArray != null) {
+                    for (i in 0 until hooksArray.length()) {
+                        val o = hooksArray.optJSONObject(i) ?: continue
+                        val p = o.optString("path", "")
+                        if (p.isEmpty()) continue
+                        try {
+                            val src = fetchUrlString(UrlResolve.resolve(baseDir, p))
+                            putModule(p, src)
+                        } catch (e: Exception) {
+                            Log.w(TAG, "remote hook fetch failed path=$p: ${e.message}")
+                        }
+                    }
+                }
+
+                val effectivePath = UrlResolve.normalizeModuleKey(hookPath)
+                if (moduleMap.optString(effectivePath).isEmpty()) {
+                    val src = fetchUrlString(UrlResolve.resolve(baseDir, hookPath.trim()))
+                    putModule(hookPath.trim(), src)
+                }
+
+                val entrySource = moduleMap.optString(effectivePath)
+                if (entrySource.isEmpty()) {
+                    mainHandler.post {
+                        showError("Remote entry $effectivePath not loaded (check hooks.json / hookPath)")
+                    }
+                    return@Thread
+                }
+
+                if (hooksArray == null || hooksArray.length() == 0) {
+                    hooksManifest = JSONObject().put(
+                        "hooks",
+                        JSONArray().put(
+                            JSONObject().put("path", effectivePath).put("name", "Remote"),
+                        ),
+                    )
+                }
+
+                val vnodeJson = RelayRuntime.runHookWithHost(
+                    source = entrySource,
+                    moduleMapJson = moduleMap.toString(),
+                    themeYaml = themeYaml,
+                    hooksManifestJson = hooksManifest.toString(),
+                    file = effectivePath,
+                    themeName = themeName,
+                    prefersDark = prefersDark,
+                    displayDensity = dm.density,
+                    scaledDensity = dm.scaledDensity,
+                )
+
+                mainHandler.post {
+                    try {
+                        Log.i(TAG, "HookRenderer: remote hook OK base=$base")
+                        applyThemeToChrome()
+                        val ok = renderer.render(vnodeJson, container) { runRender() }
+                        if (!ok) {
+                            showError("Render returned false")
+                        } else {
+                            onReady?.invoke()
+                        }
+                    } catch (e: Exception) {
+                        Log.e(TAG, "HookRenderer: remote render error", e)
+                        showError(e.message ?: e.toString(), e.stackTraceToString())
+                    }
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "HookRenderer: remote fetch error", e)
+                mainHandler.post {
+                    showError(e.message ?: e.toString(), e.stackTraceToString())
+                }
+            }
+        }.start()
+    }
+
+    private fun fetchUrlString(urlString: String): String {
+        val url = URL(urlString)
+        val conn = url.openConnection() as HttpURLConnection
+        conn.connectTimeout = 20_000
+        conn.readTimeout = 20_000
+        conn.instanceFollowRedirects = true
+        return try {
+            val code = conn.responseCode
+            if (code !in 200..299) {
+                throw IOException("HTTP $code for $urlString")
+            }
+            conn.inputStream.bufferedReader().readText()
+        } finally {
+            conn.disconnect()
+        }
     }
 
     private fun loadThemeYaml(): String {

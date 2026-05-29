@@ -1,0 +1,32 @@
+---
+description: Style handling must occur in relay-runtime core, never in platform glue
+globs: "**/*.rs,**/*.kt,src/**/*"
+alwaysApply: true
+---
+
+# Style Resolution: Core-Only
+
+All style handling MUST occur in relay-runtime core. Platform glue (Android `.kt`, web host) must NOT interpret className or Tailwind classes.
+
+## Responsibilities
+
+| Layer | Responsibility |
+|-------|----------------|
+| **relay-runtime (Rust)** | Parse className + inline style → themed-styler → output resolved `props.style` with platform-ready values. Support translation to all standard OS style property formats. |
+| **Platform glue (.kt)** | Apply pre-resolved `style` prop directly to View. No className parsing. No Tailwind interpretation. No translation unless absolutely necessary. |
+
+## VNode Prop Contract
+
+The runtime outputs `props.style` as an object with standard keys (camelCase):
+- Spacing: `padding`, `margin`, `marginTop`, `marginBottom`, etc. (numbers in dp/px)
+- Typography: `fontSize`, `fontWeight`, `color`
+- Visual: `backgroundColor`, `borderRadius`
+
+Platform glue maps these 1:1 to View APIs. No interpretation.
+
+## In .kt Files
+
+- NEVER parse `className` to derive styles
+- NEVER implement Tailwind/token→style mapping
+- ONLY apply `props.style` keys directly (e.g. `style.backgroundColor` → `view.setBackgroundColor()`)
+- Layout margins come from `style.marginTop`, `style.marginBottom`, etc., not from className tokens

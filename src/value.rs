@@ -3,7 +3,24 @@
 use crate::ast::{Param, Statement};
 use std::cell::RefCell;
 use std::collections::HashMap;
+use std::fmt;
 use std::rc::Rc;
+
+/// Closures used for host callbacks (e.g. `Relay.git.readFile`) where a plain function pointer cannot capture state.
+#[derive(Clone)]
+pub struct NativeFnClosure(pub Rc<dyn Fn(&[Value]) -> Result<Value, String>>);
+
+impl PartialEq for NativeFnClosure {
+    fn eq(&self, other: &Self) -> bool {
+        Rc::ptr_eq(&self.0, &other.0)
+    }
+}
+
+impl fmt::Debug for NativeFnClosure {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("NativeFnClosure(..)")
+    }
+}
 
 /// Runtime value.
 #[derive(Debug, Clone)]
@@ -25,8 +42,10 @@ pub enum Value {
         component_hooks: Option<usize>,
         component_module_path: Option<String>,
     },
-    /// Native/host function
+    /// Native/host function (function pointer — no environment)
     Native(fn(&[Value]) -> Result<Value, String>),
+    /// Host closure (e.g. `Relay.git.readFile` with captured repo path). Prefer over static `Native` when state is required.
+    NativeFn(NativeFnClosure),
     /// useState setter - shared ref to state cell
     Setter(Rc<RefCell<Value>>),
     /// React hook from import('react') — name is "useState", "useEffect", etc.
@@ -44,6 +63,7 @@ impl PartialEq for Value {
             (Value::Object(a), Value::Object(b)) => a == b,
             (Value::Setter(a), Value::Setter(b)) => Rc::ptr_eq(a, b),
             (Value::ReactHook(a), Value::ReactHook(b)) => a == b,
+            (Value::NativeFn(a), Value::NativeFn(b)) => a == b,
             _ => false,
         }
     }
@@ -84,6 +104,33 @@ impl Value {
                     .collect(),
             ),
             _ => serde_json::Value::Null,
+        }
+    }
+
+    /// Convert to JSON for debug context (locals snapshot). Non-serializable values become placeholders.
+    pub fn to_debug_json(&self) -> serde_json::Value {
+        match self {
+            Value::Null => serde_json::Value::Null,
+            Value::Bool(b) => serde_json::Value::Bool(*b),
+            Value::Number(n) => serde_json::Number::from_f64(*n)
+                .map(serde_json::Value::Number)
+                .unwrap_or(serde_json::Value::Null),
+            Value::String(s) => serde_json::Value::String(s.clone()),
+            Value::Array(arr) => {
+                serde_json::Value::Array(arr.iter().map(Self::to_debug_json).collect())
+            }
+            Value::Object(obj) => serde_json::Value::Object(
+                obj.iter()
+                    .map(|(k, v)| (k.clone(), v.to_debug_json()))
+                    .collect(),
+            ),
+            Value::Function { .. } => serde_json::Value::String("[Function]".to_string()),
+            Value::Native(_) => serde_json::Value::String("[Native]".to_string()),
+            Value::NativeFn(_) => serde_json::Value::String("[NativeFn]".to_string()),
+            Value::Setter(_) => serde_json::Value::String("[Setter]".to_string()),
+            Value::ReactHook(name) => {
+                serde_json::Value::String(format!("[Hook: {}]", name))
+            }
         }
     }
 
@@ -146,6 +193,14 @@ impl Env {
             .get(name)
             .map(|(v, _, _)| v.clone())
             .or_else(|| self.parent.as_ref().and_then(|p| p.borrow().get(name)))
+    }
+
+    /// Snapshot current scope bindings for debug (error context). Uses Value::to_debug_json.
+    pub fn to_locals_json(&self) -> serde_json::Map<String, serde_json::Value> {
+        self.bindings
+            .iter()
+            .map(|(k, (v, _, _))| (k.clone(), v.to_debug_json()))
+            .collect()
     }
 
     pub fn get_mutability(&self, name: &str) -> Option<Mutability> {

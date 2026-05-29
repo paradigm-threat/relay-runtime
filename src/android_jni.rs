@@ -4,7 +4,8 @@
 
 #![cfg(target_os = "android")]
 
-use crate::host::{Host, HostHandle, ModuleMapHost};
+use crate::host::{fetch_options_json, Host, HostHandle, ModuleMapHost};
+use crate::markdown_host;
 use crate::run_state;
 use crate::style_resolve::{resolve_vnode_styles, Platform};
 use crate::vdom::{collect_usage_from_vnode_json, value_to_vnode_with_handlers, VNode};
@@ -20,6 +21,8 @@ use std::rc::Rc;
 use themed_styler::{get_default_state_json, get_theme_list_json, register_theme_json, render_css_for_web, set_theme_json};
 
 thread_local! {
+    /// Set for the duration of `nativeRunHookWithHost` so [`AndroidHost::fetch`] can call into Java.
+    static ANDROID_HOOK_JVM: RefCell<Option<jni::JavaVM>> = RefCell::new(None);
     static INJECTED_CSS: RefCell<String> = RefCell::new(String::new());
     static LAST_STATE: RefCell<String> = RefCell::new(String::new());
     /// Theme name selected by relayRuntime.setTheme() — used on next runRender.
@@ -27,7 +30,18 @@ thread_local! {
     /// Unresolved VNode (with className) for theme-only re-resolve without re-running hook.
     static LAST_UNRESOLVED_VNODE: RefCell<Option<VNode>> = RefCell::new(None);
     static LAST_THEME_YAML: RefCell<String> = RefCell::new(String::new());
+    /// Last display density from JNI (for setThemeAndRender re-resolve).
+    static LAST_DISPLAY_DENSITY: RefCell<f32> = RefCell::new(2.0);
+    static LAST_SCALED_DENSITY: RefCell<f32> = RefCell::new(2.0);
+    /// Last system dark preference from JNI (UI_MODE_NIGHT).
+    static LAST_PREFERS_DARK: RefCell<bool> = RefCell::new(false);
 }
+
+/// Hard limits for JNI string payloads (defensive).
+const MAX_HOOK_SOURCE_BYTES: usize = 8 * 1024 * 1024;
+const MAX_MODULE_MAP_JSON_BYTES: usize = 32 * 1024 * 1024;
+const MAX_THEME_YAML_BYTES: usize = 2 * 1024 * 1024;
+const MAX_HOOKS_MANIFEST_JSON_BYTES: usize = 4 * 1024 * 1024;
 
 fn jstring_to_string(env: &mut JNIEnv, input: JString) -> Option<String> {
     if input.is_null() {
@@ -264,6 +278,60 @@ fn get_themes() -> String {
     })
 }
 
+/// Clears [`ANDROID_HOOK_JVM`] when dropped (end of hook run).
+struct AndroidHookJvmGuard;
+
+impl AndroidHookJvmGuard {
+    fn arm(jvm: jni::JavaVM) -> Self {
+        ANDROID_HOOK_JVM.with(|c| *c.borrow_mut() = Some(jvm));
+        Self
+    }
+}
+
+impl Drop for AndroidHookJvmGuard {
+    fn drop(&mut self) {
+        ANDROID_HOOK_JVM.with(|c| *c.borrow_mut() = None);
+    }
+}
+
+/// `RelayRuntimeHostHttp.hostHttpFetchSync(url, optionsJson)` → JSON string matching web `__relay_host_fetch`.
+fn android_host_http_fetch_sync(url: &str, options_json: &str) -> Result<String, String> {
+    use jni::objects::JValue;
+    ANDROID_HOOK_JVM.with(|cell| {
+        let vm = cell.borrow();
+        let vm = vm.as_ref().ok_or_else(|| {
+            "Host.fetch outside nativeRunHookWithHost (JavaVM not set)".to_string()
+        })?;
+        let mut env = vm
+            .attach_current_thread_as_daemon()
+            .map_err(|e| format!("attach_current_thread: {:?}", e))?;
+        let cls = env.find_class("com/clevertree/relayruntime/RelayRuntimeHostHttp").map_err(|_| {
+            "com.clevertree.relayruntime.RelayRuntimeHostHttp not on classpath (see relay-runtime/support/android/)"
+                .to_string()
+        })?;
+        let ju = env.new_string(url).map_err(|e| format!("new_string url: {:?}", e))?;
+        let jo = env
+            .new_string(options_json)
+            .map_err(|e| format!("new_string options: {:?}", e))?;
+        let out = env
+            .call_static_method(
+                cls,
+                "hostHttpFetchSync",
+                "(Ljava/lang/String;Ljava/lang/String;)Ljava/lang/String;",
+                &[JValue::Object(&ju), JValue::Object(&jo)],
+            )
+            .map_err(|e| format!("hostHttpFetchSync: {:?}", e))?;
+        let jstr = jni::objects::JString::from(
+            out.l()
+                .map_err(|e| format!("hostHttpFetchSync return: {:?}", e))?,
+        );
+        let s = env
+            .get_string(&jstr)
+            .map_err(|e| format!("get_string: {:?}", e))?;
+        Ok(s.into())
+    })
+}
+
 struct AndroidHost {
     inner: HostHandle,
     theme: Option<Value>,
@@ -271,8 +339,15 @@ struct AndroidHost {
 }
 
 impl Host for AndroidHost {
-    fn fetch(&self, _url: &str, _options: Option<&Value>) -> Result<Value, String> {
-        Err("fetch not implemented on Android".to_string())
+    fn log(&self, level: &str, message: &str) {
+        println!("[relay-runtime:{}] {}", level, message);
+    }
+
+    fn fetch(&self, url: &str, options: Option<&Value>) -> Result<Value, String> {
+        let opts = fetch_options_json(options);
+        let json_str = android_host_http_fetch_sync(url, &opts)?;
+        let j: serde_json::Value = serde_json::from_str(&json_str).map_err(|e| e.to_string())?;
+        Ok(Value::from_json(&j))
     }
     fn navigate(&self, _path: &str) -> Result<(), String> {
         Err("navigate not implemented on Android".to_string())
@@ -309,6 +384,13 @@ impl Host for AndroidHost {
         if path == "@clevertree/relay-runtime" || path == "relay-runtime" {
             return Ok(relay_runtime_module());
         }
+        if path == "@clevertree/markdown"
+            || path == "@clevertree/markdown.js"
+            || path == "@clevertree/hook-transpiler"
+            || path == "@clevertree/hook-transpiler.js"
+        {
+            return Ok(markdown_host::markdown_module());
+        }
         self.inner.borrow().load_module(path)
     }
 }
@@ -327,6 +409,8 @@ pub extern "system" fn Java_com_clevertree_relayruntime_RelayRuntime_nativeRunHo
     file: JString,
     theme_name: JString,
     prefers_dark: jboolean,
+    display_density: jni::sys::jfloat,
+    scaled_density: jni::sys::jfloat,
 ) -> jstring {
     let source = match jstring_to_string(&mut env, source) {
         Some(s) => s,
@@ -335,15 +419,55 @@ pub extern "system" fn Java_com_clevertree_relayruntime_RelayRuntime_nativeRunHo
             return std::ptr::null_mut();
         }
     };
+    if source.len() > MAX_HOOK_SOURCE_BYTES {
+        let _ = env.throw_new(
+            "java/lang/IllegalArgumentException",
+            &format!("source exceeds {} bytes", MAX_HOOK_SOURCE_BYTES),
+        );
+        return std::ptr::null_mut();
+    }
     let module_map_json = jstring_to_string(&mut env, module_map_json).unwrap_or_else(|| "{}".to_string());
+    if module_map_json.len() > MAX_MODULE_MAP_JSON_BYTES {
+        let _ = env.throw_new(
+            "java/lang/IllegalArgumentException",
+            &format!("moduleMapJson exceeds {} bytes", MAX_MODULE_MAP_JSON_BYTES),
+        );
+        return std::ptr::null_mut();
+    }
     let theme_yaml = jstring_to_string(&mut env, theme_yaml).unwrap_or_default();
+    if theme_yaml.len() > MAX_THEME_YAML_BYTES {
+        let _ = env.throw_new(
+            "java/lang/IllegalArgumentException",
+            &format!("themeYaml exceeds {} bytes", MAX_THEME_YAML_BYTES),
+        );
+        return std::ptr::null_mut();
+    }
     let hooks_manifest_json = jstring_to_string(&mut env, hooks_manifest_json).unwrap_or_else(|| "{}".to_string());
+    if hooks_manifest_json.len() > MAX_HOOKS_MANIFEST_JSON_BYTES {
+        let _ = env.throw_new(
+            "java/lang/IllegalArgumentException",
+            &format!("hooksManifestJson exceeds {} bytes", MAX_HOOKS_MANIFEST_JSON_BYTES),
+        );
+        return std::ptr::null_mut();
+    }
     let file = jstring_to_string(&mut env, file).unwrap_or_default();
     let theme_name_str = jstring_to_string(&mut env, theme_name)
         .filter(|s| !s.is_empty())
         .or_else(|| Some(CURRENT_THEME.with(|c| c.borrow().clone())))
         .unwrap_or_else(|| "default".to_string());
     let prefers_dark_bool = prefers_dark == jni::sys::JNI_TRUE;
+
+    let mut d_density = display_density;
+    if !d_density.is_finite() || d_density <= 0.0 {
+        d_density = 1.0;
+    }
+    let mut s_density = scaled_density;
+    if !s_density.is_finite() || s_density <= 0.0 {
+        s_density = d_density;
+    }
+    LAST_DISPLAY_DENSITY.with(|c| *c.borrow_mut() = d_density);
+    LAST_SCALED_DENSITY.with(|c| *c.borrow_mut() = s_density);
+    LAST_PREFERS_DARK.with(|c| *c.borrow_mut() = prefers_dark_bool);
 
     INJECTED_CSS.with(|c| *c.borrow_mut() = String::new());
 
@@ -373,16 +497,29 @@ pub extern "system" fn Java_com_clevertree_relayruntime_RelayRuntime_nativeRunHo
     }));
     inner.borrow().set_parent_host(android_host.clone());
 
+    let jvm = match env.get_java_vm() {
+        Ok(v) => v,
+        Err(e) => {
+            let _ = env.throw_new(
+                "java/lang/RuntimeException",
+                &format!("get_java_vm failed: {:?}", e),
+            );
+            return std::ptr::null_mut();
+        }
+    };
+    let _jvm_guard = AndroidHookJvmGuard::arm(jvm);
+
     match run_state::run_hook_persistent(&source, android_host) {
         Ok(result) => {
+            run_state::clear_handler_registry_for_vnode_pass();
             let vnode = value_to_vnode_with_handlers(&result, &mut |v| run_state::register_handler(v)).normalize();
-            let density = 2.0; // TODO: pass from Kotlin via JNI
             let theme_arg = if theme_name_str.is_empty() { None } else { Some(theme_name_str.as_str()) };
             let (resolved, _, state_opt) = resolve_vnode_styles(
                 vnode.clone(),
                 &theme_yaml,
                 Platform::Android,
-                density,
+                d_density,
+                s_density,
                 theme_arg,
                 prefers_dark_bool,
             );
@@ -496,12 +633,15 @@ pub extern "system" fn Java_com_clevertree_relayruntime_RelayRuntime_nativeSetTh
         match vnode_opt {
             Some(vnode) if !theme_yaml.is_empty() => {
                 let theme_arg = if name.is_empty() { None } else { Some(name.as_str()) };
-                let prefers_dark = name == "dark";
+                let display_d = LAST_DISPLAY_DENSITY.with(|c| *c.borrow());
+                let scaled_d = LAST_SCALED_DENSITY.with(|c| *c.borrow());
+                let prefers_dark = LAST_PREFERS_DARK.with(|c| *c.borrow());
                 let (resolved, _, state_opt) = resolve_vnode_styles(
                     vnode,
                     &theme_yaml,
                     Platform::Android,
-                    2.0,
+                    display_d,
+                    scaled_d,
                     theme_arg,
                     prefers_dark,
                 );

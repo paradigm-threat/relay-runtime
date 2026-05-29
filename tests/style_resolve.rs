@@ -27,6 +27,20 @@ themes:
 current_theme: light
 "##;
 
+/// Two named themes to verify `theme_name` selects the correct entry.
+const THEME_LIGHT_DARK: &str = r##"
+themes:
+  light:
+    selectors:
+      ".tone":
+        color: "#111111"
+  dark:
+    selectors:
+      ".tone":
+        color: "#eeeeee"
+current_theme: light
+"##;
+
 fn vnode_with_classname(tag: &str, className: &str, children: Vec<VNode>) -> VNode {
     let mut props = HashMap::new();
     props.insert("className".to_string(), PropValue::String(className.to_string()));
@@ -44,7 +58,7 @@ fn style_resolution_removes_classname_on_android() {
     let vnode = vnode_with_classname("div", "flex p-4", vec![]);
 
     let (resolved, css, state_json) =
-        resolve_vnode_styles(vnode, MINIMAL_THEME, Platform::Android, 1.0, None, false);
+        resolve_vnode_styles(vnode, MINIMAL_THEME, Platform::Android, 1.0, 1.0, None, false);
 
     assert!(css.is_none());
     assert!(state_json.is_some()); // For getThemes
@@ -70,7 +84,7 @@ fn style_resolution_removes_classname_on_android() {
 fn style_resolution_produces_expected_keys() {
     let vnode = vnode_with_classname("div", "flex gap-4", vec![]);
 
-    let (resolved, _, _) = resolve_vnode_styles(vnode, MINIMAL_THEME, Platform::Android, 1.0, None, false);
+    let (resolved, _, _) = resolve_vnode_styles(vnode, MINIMAL_THEME, Platform::Android, 1.0, 1.0, None, false);
 
     match &resolved {
         VNode::Element { props, .. } => {
@@ -106,7 +120,7 @@ fn style_resolution_produces_expected_keys() {
 fn style_resolution_theme_selectors() {
     let vnode = vnode_with_classname("div", "bg-primary", vec![]);
 
-    let (resolved, _, _) = resolve_vnode_styles(vnode, MINIMAL_THEME, Platform::Android, 1.0, None, false);
+    let (resolved, _, _) = resolve_vnode_styles(vnode, MINIMAL_THEME, Platform::Android, 1.0, 1.0, None, false);
 
     match &resolved {
         VNode::Element { props, .. } => {
@@ -138,7 +152,7 @@ fn style_resolution_web_same_as_native() {
     let vnode = vnode_with_classname("div", "flex bg-primary", vec![]);
 
     let (resolved, css, state_json) =
-        resolve_vnode_styles(vnode, MINIMAL_THEME, Platform::Web, 1.0, None, false);
+        resolve_vnode_styles(vnode, MINIMAL_THEME, Platform::Web, 1.0, 1.0, None, false);
 
     assert!(css.is_none());
     assert!(state_json.is_some());
@@ -162,7 +176,7 @@ fn style_resolution_nested_children() {
     let child = vnode_with_classname("span", "text-base", vec![VNode::Text("hello".into())]);
     let parent = vnode_with_classname("div", "flex", vec![child]);
 
-    let (resolved, _, _) = resolve_vnode_styles(parent, MINIMAL_THEME, Platform::Android, 1.0, None, false);
+    let (resolved, _, _) = resolve_vnode_styles(parent, MINIMAL_THEME, Platform::Android, 1.0, 1.0, None, false);
 
     match &resolved {
         VNode::Element { children, .. } => {
@@ -200,7 +214,7 @@ export default function App() {
     let result = runtime.run().unwrap();
     let vnode = value_to_vnode(&result).normalize();
 
-    let (resolved, _, _) = resolve_vnode_styles(vnode, MINIMAL_THEME, Platform::Android, 1.0, None, false);
+    let (resolved, _, _) = resolve_vnode_styles(vnode, MINIMAL_THEME, Platform::Android, 1.0, 1.0, None, false);
 
     match &resolved {
         VNode::Element { tag, props, children, .. } => {
@@ -243,8 +257,8 @@ export default function App() {
 fn style_resolution_web_vs_android_same_base_keys() {
     let vnode = vnode_with_classname("div", "flex p-4 bg-primary gap-4", vec![]);
 
-    let (web_resolved, _, _) = resolve_vnode_styles(vnode.clone(), MINIMAL_THEME, Platform::Web, 1.0, None, false);
-    let (android_resolved, _, _) = resolve_vnode_styles(vnode, MINIMAL_THEME, Platform::Android, 1.0, None, false);
+    let (web_resolved, _, _) = resolve_vnode_styles(vnode.clone(), MINIMAL_THEME, Platform::Web, 1.0, 1.0, None, false);
+    let (android_resolved, _, _) = resolve_vnode_styles(vnode, MINIMAL_THEME, Platform::Android, 1.0, 1.0, None, false);
 
     let web_style = match &web_resolved {
         VNode::Element { props, .. } => props.get("style").and_then(|p| {
@@ -289,4 +303,50 @@ fn style_resolution_web_vs_android_same_base_keys() {
         android_style.get("backgroundColor"),
         "Both platforms resolve theme colors identically"
     );
+}
+
+#[test]
+fn style_resolution_theme_name_selects_dark() {
+    let vnode = vnode_with_classname("div", "tone", vec![]);
+    let (resolved, _, _) =
+        resolve_vnode_styles(vnode, THEME_LIGHT_DARK, Platform::Android, 1.0, 1.0, Some("dark"), false);
+    match &resolved {
+        VNode::Element { props, .. } => {
+            let style = props
+                .get("style")
+                .and_then(|p| {
+                    if let PropValue::Style(m) = p {
+                        Some(m)
+                    } else {
+                        None
+                    }
+                })
+                .expect("style");
+            assert_eq!(style.get("color").map(|s| s.as_str()), Some("#eeeeee"));
+        }
+        _ => panic!("expected Element"),
+    }
+}
+
+#[test]
+fn style_resolution_theme_name_selects_light() {
+    let vnode = vnode_with_classname("div", "tone", vec![]);
+    let (resolved, _, _) =
+        resolve_vnode_styles(vnode, THEME_LIGHT_DARK, Platform::Android, 1.0, 1.0, Some("light"), true);
+    match &resolved {
+        VNode::Element { props, .. } => {
+            let style = props
+                .get("style")
+                .and_then(|p| {
+                    if let PropValue::Style(m) = p {
+                        Some(m)
+                    } else {
+                        None
+                    }
+                })
+                .expect("style");
+            assert_eq!(style.get("color").map(|s| s.as_str()), Some("#111111"));
+        }
+        _ => panic!("expected Element"),
+    }
 }

@@ -213,9 +213,12 @@ fn compile_file(path: &Path, source: &str, _rel: &str) -> Vec<Diag> {
     diags
 }
 
-fn parse_error_location(_e: &RuntimeError, _source: &str) -> (usize, usize) {
-    // Parse error messages often don't include position; default to line 1
-    (1, 1)
+fn parse_error_location(e: &RuntimeError, _source: &str) -> (usize, usize) {
+    if let relay_runtime::RuntimeError::ParseDetail(d) = e {
+        (d.loc.line as usize, d.loc.column as usize)
+    } else {
+        (1, 1)
+    }
 }
 
 fn validate_imports(

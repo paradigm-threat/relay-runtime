@@ -38,6 +38,18 @@ export function vnodeToDom(v, invokeHandler = invoke_handler, onAfterInvoke = nu
   if (v.Text !== undefined) return document.createTextNode(v.Text);
   if (v.Element) {
     const { tag, props, children } = v.Element;
+    if (tag === 'relay-hook-renderer') {
+      const host = (props?.host?.value ?? props?.host) ?? '';
+      const hookPath = (props?.hookPath?.value ?? props?.hookPath) ?? 'hooks/app.jsx';
+      const baseUrl = (props?.baseUrl?.value ?? props?.baseUrl) ?? undefined;
+      const container = document.createElement('div');
+      container.className = 'relay-hook-renderer';
+      renderHook(container, { hookPath, host: host || undefined, baseUrl }).catch((e) => {
+        container.textContent = `Hook error: ${e?.message ?? e}`;
+        container.className = 'relay-hook-renderer error';
+      });
+      return container;
+    }
     if (tag === 'fragment') {
       const frag = document.createDocumentFragment();
       for (const c of children || []) {
@@ -63,6 +75,17 @@ export function vnodeToDom(v, invokeHandler = invoke_handler, onAfterInvoke = nu
           });
           continue;
         }
+        if (k === 'style') {
+          const styleObj = val && typeof val === 'object' && val.type === 'Style' ? val.value : val;
+          if (styleObj && typeof styleObj === 'object') {
+            for (const [pk, pv] of Object.entries(styleObj)) {
+              if (pv != null && typeof pv !== 'object') {
+                el.style[pk] = String(pv);
+              }
+            }
+          }
+          continue;
+        }
         const str =
           val && typeof val === 'object' && val.type === 'String' && val.value !== undefined
             ? val.value
@@ -79,9 +102,18 @@ export function vnodeToDom(v, invokeHandler = invoke_handler, onAfterInvoke = nu
       }
     }
     if (children && Array.isArray(children)) {
-      for (const c of children) {
-        const child = vnodeToDom(c, invokeHandler, onAfterInvoke);
-        if (child) el.appendChild(child);
+      const parentStyle = props?.style?.value ?? props?.style ?? {};
+      const isRow = parentStyle.flexDirection === 'row' || (!parentStyle.flexDirection && parentStyle.display === 'flex');
+      const spacing = isRow ? (parentStyle.spaceX ?? parentStyle.gap) : (parentStyle.spaceY ?? parentStyle.gap);
+      for (let i = 0; i < children.length; i++) {
+        const child = vnodeToDom(children[i], invokeHandler, onAfterInvoke);
+        if (child) {
+          if (i > 0 && spacing != null && child.style) {
+            const px = typeof spacing === 'number' ? spacing + 'px' : String(spacing);
+            child.style[isRow ? 'marginLeft' : 'marginTop'] = px;
+          }
+          el.appendChild(child);
+        }
       }
     }
     return el;
@@ -103,6 +135,17 @@ export function vnodeToDom(v, invokeHandler = invoke_handler, onAfterInvoke = nu
           });
           continue;
         }
+        if (k === 'style') {
+          const styleObj = val && typeof val === 'object' && val.type === 'Style' ? val.value : val;
+          if (styleObj && typeof styleObj === 'object') {
+            for (const [pk, pv] of Object.entries(styleObj)) {
+              if (pv != null && typeof pv !== 'object') {
+                el.style[pk] = String(pv);
+              }
+            }
+          }
+          continue;
+        }
         const str =
           val && typeof val === 'object' && val.type === 'String' && val.value !== undefined
             ? val.value
@@ -119,9 +162,18 @@ export function vnodeToDom(v, invokeHandler = invoke_handler, onAfterInvoke = nu
       }
     }
     if (v.children && Array.isArray(v.children)) {
-      for (const c of v.children) {
-        const child = vnodeToDom(c, invokeHandler, onAfterInvoke);
-        if (child) el.appendChild(child);
+      const parentStyle = v.props?.style?.value ?? v.props?.style ?? {};
+      const isRow = parentStyle.flexDirection === 'row' || (!parentStyle.flexDirection && parentStyle.display === 'flex');
+      const spacing = isRow ? (parentStyle.spaceX ?? parentStyle.gap) : (parentStyle.spaceY ?? parentStyle.gap);
+      for (let i = 0; i < v.children.length; i++) {
+        const child = vnodeToDom(v.children[i], invokeHandler, onAfterInvoke);
+        if (child) {
+          if (i > 0 && spacing != null && child.style) {
+            const px = typeof spacing === 'number' ? spacing + 'px' : String(spacing);
+            child.style[isRow ? 'marginLeft' : 'marginTop'] = px;
+          }
+          el.appendChild(child);
+        }
       }
     }
     return el;
@@ -135,6 +187,149 @@ export function vnodeToDom(v, invokeHandler = invoke_handler, onAfterInvoke = nu
     return frag;
   }
   return null;
+}
+
+/**
+ * HookRenderer: run a hook and render into container.
+ * Local: hookPath + baseUrl. Remote: host + hookPath (fetches from host).
+ *
+ * @param {HTMLElement} container - DOM element to render into
+ * @param {object} options
+ * @param {string} options.hookPath - Path (e.g. 'hooks/app.jsx')
+ * @param {string} [options.host] - For remote: base URL to fetch from
+ * @param {string} [options.baseUrl] - For local: base URL for resolving paths
+ * @returns {Promise<void>}
+ */
+export async function renderHook(container, options = {}) {
+  const { hookPath, host, baseUrl = getDefaultBaseUrl() } = options;
+  let moduleMap = {};
+  let source = '';
+  let effectivePath = hookPath || 'hooks/app.jsx';
+  let themeYaml = '';
+  let hooksManifest = { hooks: [{ path: effectivePath, name: 'Default' }] };
+
+  if (host) {
+    const base = host.trim().replace(/\/+$/, '');
+    const baseDir = `${base}/`;
+    const cacheBust = '?t=' + Date.now();
+
+    let hookHostSameOrigin = true;
+    if (typeof location !== 'undefined' && location.origin) {
+      try {
+        hookHostSameOrigin = new URL(baseDir).origin === location.origin;
+      } catch {
+        hookHostSameOrigin = true;
+      }
+    }
+
+    let entryPath = effectivePath;
+    try {
+      if (hookHostSameOrigin) {
+        const optsResp = await fetch(baseDir, { method: 'OPTIONS' });
+        if (optsResp.ok) {
+          let p = optsResp.headers.get('x-hook-path') || optsResp.headers.get('x-relay-hook-path');
+          if (!p && optsResp.headers.get('content-type')?.includes('application/json')) {
+            const j = await optsResp.json();
+            p = j?.hookPath ?? j?.hook_path ?? j?.path;
+          }
+          if (p) entryPath = p;
+        }
+      }
+    } catch {
+      /* discovery optional */
+    }
+
+    hooksManifest = { hooks: [] };
+    if (hookHostSameOrigin) {
+      const themeUrl = resolveHookUrl(baseDir, 'theme.yaml') + cacheBust;
+      const hooksUrl = resolveHookUrl(baseDir, 'hooks.json') + cacheBust;
+      const [themeResp, hooksResp] = await Promise.all([
+        fetch(themeUrl).catch(() => null),
+        fetch(hooksUrl).catch(() => null),
+      ]);
+      if (themeResp && themeResp.ok) {
+        themeYaml = await themeResp.text();
+      }
+      if (hooksResp && hooksResp.ok) {
+        try {
+          hooksManifest = await hooksResp.json();
+        } catch {
+          hooksManifest = { hooks: [] };
+        }
+      }
+    }
+
+    moduleMap = {};
+    const keyFromPath = (p) => {
+      const s = (p || '').trim();
+      if (s.startsWith('/')) return s.slice(1);
+      return s.replace(/^\.\//, '');
+    };
+    const putModule = (pathKey, text) => {
+      const k = (pathKey || '').trim();
+      if (!k) return;
+      moduleMap[k] = text;
+      const n = keyFromPath(k);
+      if (n && n !== k) moduleMap[n] = text;
+    };
+    for (const h of hooksManifest.hooks || []) {
+      if (!h || !h.path) continue;
+      const u = resolveHookUrl(baseDir, h.path) + cacheBust;
+      const resp = await fetch(u);
+      if (resp.ok) {
+        putModule(h.path, await resp.text());
+      } else {
+        console.warn('[relay-runtime] remote hook fetch failed:', h.path, resp.status);
+      }
+    }
+
+    effectivePath = keyFromPath(entryPath);
+
+    if (!moduleMap[effectivePath]) {
+      const srcUrl = resolveHookUrl(baseDir, entryPath) + cacheBust;
+      const srcResp = await fetch(srcUrl);
+      if (!srcResp.ok) throw new Error(`Fetch entry ${srcUrl} failed: ${srcResp.status}`);
+      source = await srcResp.text();
+      putModule(entryPath, source);
+    } else {
+      source = moduleMap[effectivePath];
+    }
+
+    if (!hooksManifest.hooks || hooksManifest.hooks.length === 0) {
+      hooksManifest = { hooks: [{ path: effectivePath, name: 'Default' }] };
+    }
+  } else {
+    const url = resolveUrl(baseUrl, effectivePath);
+    const r = await fetch(url);
+    if (!r.ok) throw new Error(`Fetch ${url} failed: ${r.status}`);
+    source = await r.text();
+    moduleMap[effectivePath] = source;
+    hooksManifest = { hooks: [{ path: effectivePath, name: 'Default' }] };
+  }
+
+  const doRender = () => {
+    try {
+      const vnodeJson = run_hook_with_host(
+        source,
+        JSON.stringify(moduleMap),
+        themeYaml,
+        JSON.stringify(hooksManifest),
+        effectivePath
+      );
+      const css = get_injected_css();
+      const styleEl = document.getElementById(_styleId);
+      if (styleEl) styleEl.textContent = (styleEl.textContent || '') + css;
+      container.innerHTML = '';
+      const vnode = JSON.parse(vnodeJson);
+      const el = vnodeToDom(vnode, invoke_handler, doRender);
+      if (el) container.appendChild(el);
+    } catch (e) {
+      container.textContent = `Render error: ${e?.message ?? e}`;
+      container.className = (container.className || '') + ' error';
+      throw e;
+    }
+  };
+  doRender();
 }
 
 /**
@@ -164,15 +359,40 @@ const DEFAULTS = {
 };
 
 /**
- * Resolve a path against baseUrl.
- * @param {string} baseUrl
- * @param {string} path
+ * Resolve hook/theme/manifest path against a base URL.
+ * Handles absolute URLs, root-relative paths (`/foo`), and relative paths (`./x`, `../x`).
+ * Matches `new URL(path, baseWithSlash)` semantics.
+ *
+ * @param {string} baseUrl - Directory or origin base, e.g. `https://cdn.example.com/pkg/` or `http://10.0.2.2:8080`
+ * @param {string} path - Path or URL to resolve
  * @returns {string}
  */
+export function resolveHookUrl(baseUrl, path) {
+  const p = (path ?? '').trim();
+  if (!p) return baseUrl || '';
+  if (/^https?:\/\//i.test(p)) return p;
+  if (!baseUrl || baseUrl === '.') {
+    try {
+      const base =
+        typeof document !== 'undefined' && document.baseURI
+          ? document.baseURI
+          : 'http://localhost/';
+      return new URL(p, base).href;
+    } catch {
+      return p;
+    }
+  }
+  const dir = baseUrl.endsWith('/') ? baseUrl : `${baseUrl}/`;
+  try {
+    return new URL(p, dir).href;
+  } catch {
+    return p;
+  }
+}
+
+/** @param {string} baseUrl @param {string} path */
 function resolveUrl(baseUrl, path) {
-  if (!baseUrl || baseUrl === '.') return path;
-  const base = baseUrl.endsWith('/') ? baseUrl : baseUrl + '/';
-  return path.startsWith('./') ? base + path.slice(2) : base + path;
+  return resolveHookUrl(baseUrl, path);
 }
 
 /**

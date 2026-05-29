@@ -11,9 +11,50 @@ use std::rc::Rc;
 /// Handle to host implementation.
 pub type HostHandle = std::rc::Rc<std::cell::RefCell<dyn Host>>;
 
+/// Build the standard **`fetch()`** response object for CleverScript.
+pub fn host_fetch_object(
+    ok: bool,
+    status: f64,
+    text: impl Into<String>,
+    error: Option<String>,
+) -> Value {
+    let mut m: HashMap<String, Value> = [
+        ("ok".to_string(), Value::Bool(ok)),
+        ("status".to_string(), Value::Number(status)),
+        ("text".to_string(), Value::String(text.into())),
+    ]
+    .into_iter()
+    .collect();
+    if let Some(e) = error {
+        m.insert("error".to_string(), Value::String(e));
+    }
+    Value::Object(m)
+}
+
+/// Serialize optional `fetch` options (`{ method: "GET" }`) for host bridges (JS / JNI).
+pub fn fetch_options_json(options: Option<&Value>) -> String {
+    let method = options
+        .and_then(|o| match o {
+            Value::Object(map) => map.get("method"),
+            _ => None,
+        })
+        .and_then(|v| match v {
+            Value::String(s) => Some(s.clone()),
+            _ => None,
+        })
+        .unwrap_or_else(|| "GET".to_string());
+    serde_json::json!({ "method": method }).to_string()
+}
+
 /// Host interface for platform bindings.
 pub trait Host {
-    /// fetch(url, options?) -> response-like object
+    /// CleverScript `fetch(url, options?)` → **response object** (see [`host_fetch_object`]).
+    ///
+    /// Fields (stable contract for web WASM + Android):
+    /// - **`ok`** (`bool`): `true` for HTTP **2xx**
+    /// - **`status`** (`number`): HTTP status, or **0** on transport / host errors
+    /// - **`text`** (`string`): response body as UTF-8 text (may be empty)
+    /// - **`error`** (`string`, optional): host or network message when the call fails
     fn fetch(&self, url: &str, options: Option<&Value>) -> Result<Value, String>;
 
     /// navigate(path) -> ()
@@ -29,6 +70,11 @@ pub trait Host {
 
     /// import(path) -> module object with default, named exports
     fn load_module(&self, path: &str) -> Result<Value, String>;
+
+    /// Forward `console.log` / `warn` / `error` from hooks (Tier 5). Default: no-op.
+    fn log(&self, level: &str, message: &str) {
+        let _ = (level, message);
+    }
 }
 
 /// Mock host for testing. Records all calls.
@@ -38,6 +84,7 @@ pub struct MockHost {
     pub navigate_calls: RefCell<Vec<String>>,
     pub create_element_calls: RefCell<Vec<(String, Value, Vec<Value>)>>,
     pub load_module_calls: RefCell<Vec<String>>,
+    pub log_calls: RefCell<Vec<(String, String)>>,
     /// Modules to return from load_module: path -> module (Object with default, etc.)
     pub modules: RefCell<std::collections::HashMap<String, Value>>,
 }
@@ -58,14 +105,7 @@ impl Host for MockHost {
         self.fetch_calls
             .borrow_mut()
             .push((url.to_string(), options.cloned()));
-        Ok(Value::Object(
-            [
-                ("ok".to_string(), Value::Bool(true)),
-                ("status".to_string(), Value::Number(200.0)),
-            ]
-            .into_iter()
-            .collect(),
-        ))
+        Ok(host_fetch_object(true, 200.0, format!("mock-body:{url}"), None))
     }
 
     fn navigate(&self, path: &str) -> Result<(), String> {
@@ -104,6 +144,12 @@ impl Host for MockHost {
             .get(path)
             .cloned()
             .ok_or_else(|| format!("Module not found: {}", path))
+    }
+
+    fn log(&self, level: &str, message: &str) {
+        self.log_calls
+            .borrow_mut()
+            .push((level.to_string(), message.to_string()));
     }
 }
 

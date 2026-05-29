@@ -2,12 +2,38 @@
 
 use crate::analysis::AnalysisResult;
 use crate::ast::*;
-use crate::error::RuntimeError;
+use crate::error::{RuntimeError, RuntimeErrorDetail};
 use crate::run_state::LoadedInstances;
 use crate::value::{Env, Mutability, Value};
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
+
+/// Max iterations for for/while loops. Prevents infinite loops from hanging the runtime.
+pub const MAX_LOOP_ITERATIONS: u64 = 100_000;
+
+/// Max call depth (component/function recursion). Prevents stack overflow from deep recursion.
+pub const MAX_RECURSION_DEPTH: usize = 256;
+
+/// Max array length for literals and concat. Prevents memory exhaustion.
+pub const MAX_ARRAY_LENGTH: usize = 50_000;
+
+/// Control flow from `eval_stmt` (early `return` inside `if` / loops).
+enum EvalControl {
+    Continue,
+    Return(Value),
+}
+
+/// UTF-16 code-unit slice (JS `String.prototype.slice` indices are UTF-16 units).
+fn utf16_slice_by_units(s: &str, start: usize, end: usize) -> String {
+    let v: Vec<u16> = s.encode_utf16().collect();
+    let end = end.min(v.len());
+    let start = start.min(v.len());
+    if start >= end {
+        return String::new();
+    }
+    String::from_utf16_lossy(&v[start..end])
+}
 
 /// Hook slot state for a component instance.
 #[derive(Debug)]
@@ -49,9 +75,53 @@ pub struct Runtime {
     /// Host for fetch, navigate, createElement (optional).
     pub host: Option<crate::host::HostHandle>,
     pub loaded_instances: Option<LoadedInstances>,
+    /// Call depth for recursion limit. Incremented on function/component call, decremented on return.
+    pub call_depth: usize,
+    /// Call stack for debug (Tier 1). Pushed on component/function entry, popped on success.
+    pub call_stack: Vec<String>,
 }
 
 impl Runtime {
+    /// Build a fallback VNode for error boundary: a div with data-error-boundary and the error message.
+    fn error_fallback_vnode(component_name: &str, message: &str) -> Value {
+        let mut props = HashMap::new();
+        props.insert("className".to_string(), Value::String("relay-error-boundary".to_string()));
+        props.insert(
+            "data-error-boundary".to_string(),
+            Value::String(component_name.to_string()),
+        );
+        props.insert(
+            "data-error-message".to_string(),
+            Value::String(message.to_string()),
+        );
+        props.insert(
+            "style".to_string(),
+            Value::Object(
+                [
+                    ("padding".to_string(), Value::String("8px".to_string())),
+                    ("backgroundColor".to_string(), Value::String("#fee".to_string())),
+                    ("color".to_string(), Value::String("#c00".to_string())),
+                    ("fontSize".to_string(), Value::String("12px".to_string())),
+                    ("borderRadius".to_string(), Value::String("4px".to_string())),
+                    ("border".to_string(), Value::String("1px solid #c00".to_string())),
+                ]
+                .into_iter()
+                .collect(),
+            ),
+        );
+        let children = vec![Value::String(format!("[{}] {}", component_name, message))];
+        Value::Object(
+            [
+                ("type".to_string(), Value::String("element".to_string())),
+                ("tag".to_string(), Value::String("div".to_string())),
+                ("props".to_string(), Value::Object(props)),
+                ("children".to_string(), Value::Array(children)),
+            ]
+            .into_iter()
+            .collect(),
+        )
+    }
+
     pub fn new(program: Program, analysis: AnalysisResult) -> Self {
         Self {
             env: Env::new(),
@@ -61,6 +131,25 @@ impl Runtime {
             default_instance: None,
             host: None,
             loaded_instances: None,
+            call_depth: 0,
+            call_stack: Vec::new(),
+        }
+    }
+
+    /// Build RuntimeError with call stack and locals for debug UI (Tier 1).
+    fn err(&self, message: impl Into<String>) -> RuntimeError {
+        RuntimeError::RuntimeDetail(RuntimeErrorDetail {
+            message: message.into(),
+            call_stack: self.call_stack.clone(),
+            locals: self.env.borrow().to_locals_json(),
+        })
+    }
+
+    /// Convert Runtime(s) to RuntimeDetail; other variants unchanged.
+    fn enrich_err(&self, e: RuntimeError) -> RuntimeError {
+        match e {
+            RuntimeError::Runtime(msg) => self.err(msg),
+            other => other,
         }
     }
 
@@ -98,6 +187,28 @@ impl Runtime {
                 Literal::Number(n) => Value::Number(*n),
                 Literal::String(s) => Value::String(s.clone()),
             }),
+            Expr::Unary { op, argument } => {
+                let v = self.eval_expr(argument)?;
+                Ok(match op {
+                    UnaryOp::Not => Value::Bool(!v.is_truthy()),
+                    UnaryOp::Neg => {
+                        let n = match &v {
+                            Value::Number(x) => *x,
+                            _ => return Err(RuntimeError::Runtime("- requires number".to_string())),
+                        };
+                        Value::Number(-n)
+                    }
+                    UnaryOp::Typeof => Value::String(match &v {
+                        Value::Null => "object",
+                        Value::Bool(_) => "boolean",
+                        Value::Number(_) => "number",
+                        Value::String(_) => "string",
+                        Value::Array(_) => "object",
+                        Value::Object(_) => "object",
+                        Value::Function { .. } | Value::Native(_) | Value::NativeFn(_) | Value::Setter(_) | Value::ReactHook(_) => "function",
+                    }.to_string()),
+                })
+            }
             Expr::Identifier { name } => self.env
                 .borrow()
                 .get(name)
@@ -107,9 +218,48 @@ impl Runtime {
                     .iter()
                     .map(|a| self.eval_expr(a))
                     .collect::<Result<_, _>>()?;
+                // console.log / warn / error → host.log (Tier 5)
+                if let Expr::Member {
+                    object,
+                    property,
+                    optional: _,
+                } = callee.as_ref()
+                {
+                    if let (Expr::Identifier { name: obj }, Expr::Identifier { name: method }) =
+                        (object.as_ref(), property.as_ref())
+                    {
+                        if obj == "console" {
+                            match method.as_str() {
+                                "log" | "warn" | "error" | "debug" | "info" => {
+                                    if let Some(host) = &self.host {
+                                        let msg = format_console_message(&args);
+                                        host.borrow().log(method, &msg);
+                                    }
+                                    return Ok(Value::Null);
+                                }
+                                _ => {}
+                            }
+                        }
+                    }
+                }
                 if let Expr::Identifier { name } = callee.as_ref() {
                     if let Some(result) = self.try_dispatch_host(name, &args)? {
                         return Ok(result);
+                    }
+                }
+                if let Expr::Member { object, property, optional: _ } = callee.as_ref() {
+                    if let Expr::Identifier { name } = property.as_ref() {
+                        let obj = self.eval_expr(object)?;
+                        if let Value::Array(arr) = &obj {
+                            if let Some(result) = self.array_method(name, arr, &args)? {
+                                return Ok(result);
+                            }
+                        }
+                        if let Value::String(s) = &obj {
+                            if let Some(result) = self.string_method(name, s, &args)? {
+                                return Ok(result);
+                            }
+                        }
                     }
                 }
                 let f = self.eval_expr(callee)?;
@@ -123,6 +273,21 @@ impl Runtime {
                     } else {
                         Ok(l)
                     }
+                } else if *op == BinaryOp::And {
+                    // Short-circuit && (avoid evaluating member access on null/undefined RHS)
+                    let l = self.eval_expr(left)?;
+                    if !l.is_truthy() {
+                        Ok(l)
+                    } else {
+                        self.eval_expr(right)
+                    }
+                } else if *op == BinaryOp::Or {
+                    let l = self.eval_expr(left)?;
+                    if l.is_truthy() {
+                        Ok(l)
+                    } else {
+                        self.eval_expr(right)
+                    }
                 } else {
                     let l = self.eval_expr(left)?;
                     let r = self.eval_expr(right)?;
@@ -130,6 +295,12 @@ impl Runtime {
                 }
             }
             Expr::Array { elements } => {
+                if elements.len() > MAX_ARRAY_LENGTH {
+                    return Err(RuntimeError::Runtime(format!(
+                        "Array literal exceeds max length {}",
+                        MAX_ARRAY_LENGTH
+                    )));
+                }
                 let vals: Vec<Value> = elements
                     .iter()
                     .map(|e| self.eval_expr(e))
@@ -240,6 +411,17 @@ impl Runtime {
                             a.get(i)
                                 .cloned()
                                 .ok_or_else(|| RuntimeError::Runtime(format!("Index {} out of bounds", i)))
+                        }
+                    }
+                    Value::String(s) => {
+                        // JS-like string.length (UTF-16 code unit count for BMP-ish parity; surrogate pairs differ from JS)
+                        if key == "length" {
+                            Ok(Value::Number(s.encode_utf16().count() as f64))
+                        } else {
+                            Err(RuntimeError::Runtime(format!(
+                                "Unknown string property '{}'",
+                                key
+                            )))
                         }
                     }
                     _ => Err(RuntimeError::Runtime(
@@ -460,6 +642,22 @@ impl Runtime {
                 }
             }
         }
+        // Component invocation: if tag resolves to a function, call it with props (React convention).
+        // Per-component error boundary: on error, render fallback UI instead of crashing the whole tree.
+        if let JsxTag::Identifier { name } = &el.tag {
+            let component = self.env.borrow().get(name);
+            if let Some(ref c) = component {
+                if matches!(c, Value::Function { .. } | Value::Native(_) | Value::NativeFn(_)) {
+                    let mut props_with_children = props.clone();
+                    props_with_children.insert("children".to_string(), Value::Array(children));
+                    let props_val = Value::Object(props_with_children);
+                    return match self.call_value(c, &[props_val]) {
+                        Ok(v) => Ok(v),
+                        Err(e) => Ok(Self::error_fallback_vnode(name, &e.to_string())),
+                    };
+                }
+            }
+        }
         Ok(Value::Object(
             [
                 ("type".to_string(), Value::String("element".to_string())),
@@ -483,6 +681,11 @@ impl Runtime {
             BinaryOp::Add => match (l, r) {
                 (Value::Number(a), Value::Number(b)) => Value::Number(a + b),
                 (Value::String(a), Value::String(b)) => Value::String(format!("{}{}", a, b)),
+                // JS-style coercion for template-ish concatenation (`'x' + n`, `'' + value`, `'x' + flag`)
+                (Value::String(a), Value::Number(b)) => Value::String(format!("{}{}", a, b)),
+                (Value::Number(a), Value::String(b)) => Value::String(format!("{}{}", a, b)),
+                (Value::String(a), Value::Bool(b)) => Value::String(format!("{}{}", a, b)),
+                (Value::Bool(a), Value::String(b)) => Value::String(format!("{}{}", a, b)),
                 _ => return Err(RuntimeError::Runtime("Invalid + operands".to_string())),
             },
             BinaryOp::Sub => match (l, r) {
@@ -520,14 +723,34 @@ impl Runtime {
 
     /// Call a value as a function (e.g. setter).
     pub fn call_value(&mut self, f: &Value, args: &[Value]) -> Result<Value, RuntimeError> {
+        self.call_depth += 1;
+        if self.call_depth > MAX_RECURSION_DEPTH {
+            self.call_depth -= 1;
+            return Err(RuntimeError::Runtime(
+                "Maximum recursion depth exceeded (infinite recursion or very deep component tree)".to_string(),
+            ));
+        }
+        let result = self.call_value_inner(f, args);
+        self.call_depth -= 1;
+        result
+    }
+
+    fn call_value_inner(&mut self, f: &Value, args: &[Value]) -> Result<Value, RuntimeError> {
         match f {
             Value::Setter(cell) => {
-                let new_val = args.first().cloned().unwrap_or(Value::Null);
+                let new_val = if let Some(Value::Function { .. } | Value::Native(_) | Value::NativeFn(_)) = args.first() {
+                    let f = args.first().unwrap();
+                    let current = cell.borrow().clone();
+                    self.call_value(f, &[current])?
+                } else {
+                    args.first().cloned().unwrap_or(Value::Null)
+                };
                 *cell.borrow_mut() = new_val;
                 crate::run_state::set_render_requested();
                 Ok(Value::Null)
             }
             Value::Native(native) => native(args).map_err(RuntimeError::Runtime),
+            Value::NativeFn(f) => f.0(args).map_err(RuntimeError::Runtime),
             Value::ReactHook(name) => self
                 .try_dispatch_hook(name, args)?
                 .ok_or_else(|| RuntimeError::Runtime(format!("Unknown hook: {}", name))),
@@ -539,6 +762,10 @@ impl Runtime {
                 component_module_path,
                 ..
             } => {
+                let frame = component_module_path
+                    .as_deref()
+                    .unwrap_or_else(|| component_hooks.map(|_| "<component>").unwrap_or("function"));
+                self.call_stack.push(frame.to_string());
                 let child_env = Env::child(env.clone());
                 for (i, param) in params.iter().enumerate() {
                     let val = args.get(i).cloned().unwrap_or(Value::Null);
@@ -577,29 +804,36 @@ impl Runtime {
                     self.current_component = Some(instance);
                 }
                 let mut result = Value::Null;
-                for stmt in body {
-                    if let Statement::Return { argument } = stmt {
-                        result = argument
-                            .as_ref()
-                            .map(|e| self.eval_expr(e))
-                            .transpose()?
-                            .unwrap_or(Value::Null);
-                        break;
+                let exec_result = (|| {
+                    for stmt in body {
+                        match self.eval_stmt(stmt)? {
+                            EvalControl::Return(v) => {
+                                result = v;
+                                break;
+                            }
+                            EvalControl::Continue => {}
+                        }
                     }
-                    self.eval_stmt(stmt)?;
-                }
+                    Ok(())
+                })();
                 if component_hooks.is_some() {
                     self.current_component = prev_component;
                 }
                 self.env = prev_env;
-                Ok(result)
+                match exec_result {
+                    Ok(()) => {
+                        self.call_stack.pop();
+                        Ok(result)
+                    }
+                    Err(e) => Err(self.enrich_err(e)),
+                }
             }
-            _ => Err(RuntimeError::Runtime("Not a function".to_string())),
+            _ => Err(self.err("Not a function")),
         }
     }
 
     /// Evaluate a statement.
-    pub fn eval_stmt(&mut self, stmt: &Statement) -> Result<(), RuntimeError> {
+    pub fn eval_stmt(&mut self, stmt: &Statement) -> Result<EvalControl, RuntimeError> {
         match stmt {
             Statement::VariableDecl {
                 kind,
@@ -638,7 +872,14 @@ impl Runtime {
                     }
                 }
             }
-            Statement::Return { .. } => {}
+            Statement::Return { argument } => {
+                let val = argument
+                    .as_ref()
+                    .map(|e| self.eval_expr(e))
+                    .transpose()?
+                    .unwrap_or(Value::Null);
+                return Ok(EvalControl::Return(val));
+            }
             Statement::Expr { expression } => {
                 self.eval_expr(expression)?;
             }
@@ -658,7 +899,10 @@ impl Runtime {
                 let block_env = Env::child(self.env.clone());
                 let prev_env = std::mem::replace(&mut self.env, block_env);
                 for s in stmts {
-                    self.eval_stmt(s)?;
+                    if let EvalControl::Return(v) = self.eval_stmt(s)? {
+                        self.env = prev_env;
+                        return Ok(EvalControl::Return(v));
+                    }
                 }
                 self.env = prev_env;
             }
@@ -671,9 +915,21 @@ impl Runtime {
                 let block_env = Env::child(self.env.clone());
                 let prev_env = std::mem::replace(&mut self.env, block_env);
                 if let Some(i) = init {
-                    self.eval_stmt(i)?;
+                    if let EvalControl::Return(v) = self.eval_stmt(i)? {
+                        self.env = prev_env;
+                        return Ok(EvalControl::Return(v));
+                    }
                 }
+                let mut iterations: u64 = 0;
                 loop {
+                    iterations += 1;
+                    if iterations > MAX_LOOP_ITERATIONS {
+                        self.env = prev_env;
+                        return Err(RuntimeError::Runtime(format!(
+                            "Loop exceeded {} iterations (possible infinite loop)",
+                            MAX_LOOP_ITERATIONS
+                        )));
+                    }
                     if let Some(t) = test {
                         let cond = self.eval_expr(t)?;
                         if !cond.is_truthy() {
@@ -681,7 +937,10 @@ impl Runtime {
                         }
                     }
                     for s in body {
-                        self.eval_stmt(s)?;
+                        if let EvalControl::Return(v) = self.eval_stmt(s)? {
+                            self.env = prev_env;
+                            return Ok(EvalControl::Return(v));
+                        }
                     }
                     if let Some(u) = update {
                         self.eval_expr(u)?;
@@ -690,18 +949,29 @@ impl Runtime {
                 self.env = prev_env;
             }
             Statement::While { test, body } => {
+                let mut iterations: u64 = 0;
                 while self.eval_expr(test)?.is_truthy() {
+                    iterations += 1;
+                    if iterations > MAX_LOOP_ITERATIONS {
+                        return Err(RuntimeError::Runtime(format!(
+                            "Loop exceeded {} iterations (possible infinite loop)",
+                            MAX_LOOP_ITERATIONS
+                        )));
+                    }
                     let block_env = Env::child(self.env.clone());
                     let prev_env = std::mem::replace(&mut self.env, block_env);
                     for s in body {
-                        self.eval_stmt(s)?;
+                        if let EvalControl::Return(v) = self.eval_stmt(s)? {
+                            self.env = prev_env;
+                            return Ok(EvalControl::Return(v));
+                        }
                     }
                     self.env = prev_env;
                 }
             }
             _ => {}
         }
-        Ok(())
+        Ok(EvalControl::Continue)
     }
 
     /// Dispatch hook calls to component's hook slots.
@@ -710,7 +980,7 @@ impl Runtime {
         name: &str,
         args: &[Value],
     ) -> Result<Option<Value>, RuntimeError> {
-        if !["useState", "useEffect", "useCallback"].contains(&name) {
+        if !["useState", "useEffect", "useCallback", "useRef"].contains(&name) {
             return Ok(None);
         }
         let comp = match &self.current_component {
@@ -743,11 +1013,33 @@ impl Runtime {
                 let setter = Value::Setter(cell);
                 Value::Array(vec![current, setter])
             }
-            "useEffect" | "useCallback" => {
-                return Err(RuntimeError::Runtime(format!(
-                    "{} not yet implemented",
-                    name
-                )));
+            "useEffect" => {
+                let callback = args.first().cloned().unwrap_or(Value::Null);
+                if let Value::Function { .. } = callback {
+                    let _ = self.call_value(&callback, &[]);
+                }
+                Value::Null
+            }
+            "useCallback" => {
+                let callback = args.first().cloned().unwrap_or(Value::Null);
+                callback
+            }
+            "useRef" => {
+                let initial = args.first().cloned().unwrap_or(Value::Null);
+                let slot = &comp.hook_slots[slot_idx];
+                let cell = match slot {
+                    HookSlot::State(c) => {
+                        if matches!(&*c.borrow(), Value::Null) {
+                            let mut obj = HashMap::new();
+                            obj.insert("current".to_string(), initial.clone());
+                            *c.borrow_mut() = Value::Object(obj);
+                        }
+                        c.clone()
+                    }
+                    _ => return Err(RuntimeError::Runtime("Hook slot type mismatch for useRef".to_string())),
+                };
+                let v = cell.borrow().clone();
+                v
             }
             _ => return Ok(None),
         };
@@ -804,6 +1096,214 @@ impl Runtime {
         Ok(result)
     }
 
+    /// Array instance methods: arr.map(fn), arr.filter(fn), arr.find(fn), arr.concat(arr2)
+    fn array_method(&mut self, name: &str, arr: &[Value], args: &[Value]) -> Result<Option<Value>, RuntimeError> {
+        let cb = match name {
+            "map" | "filter" | "find" => args.first().cloned(),
+            "concat" => None,
+            _ => return Ok(None),
+        };
+        let result = match name {
+            "map" => {
+                if arr.len() > MAX_ARRAY_LENGTH {
+                    return Err(RuntimeError::Runtime(format!(
+                        "Array length {} exceeds max {}",
+                        arr.len(),
+                        MAX_ARRAY_LENGTH
+                    )));
+                }
+                let f = cb.ok_or_else(|| RuntimeError::Runtime("map requires callback".to_string()))?;
+                let mut out = Vec::with_capacity(arr.len());
+                for (i, v) in arr.iter().enumerate() {
+                    let r = self.call_value(&f, &[v.clone(), Value::Number(i as f64)])?;
+                    out.push(r);
+                }
+                Value::Array(out)
+            }
+            "filter" => {
+                if arr.len() > MAX_ARRAY_LENGTH {
+                    return Err(RuntimeError::Runtime(format!(
+                        "Array length {} exceeds max {}",
+                        arr.len(),
+                        MAX_ARRAY_LENGTH
+                    )));
+                }
+                let f = cb.ok_or_else(|| RuntimeError::Runtime("filter requires callback".to_string()))?;
+                let mut out = Vec::new();
+                for (i, v) in arr.iter().enumerate() {
+                    let r = self.call_value(&f, &[v.clone(), Value::Number(i as f64)])?;
+                    if r.is_truthy() {
+                        out.push(v.clone());
+                    }
+                }
+                Value::Array(out)
+            }
+            "find" => {
+                if arr.len() > MAX_ARRAY_LENGTH {
+                    return Err(RuntimeError::Runtime(format!(
+                        "Array length {} exceeds max {}",
+                        arr.len(),
+                        MAX_ARRAY_LENGTH
+                    )));
+                }
+                let f = cb.ok_or_else(|| RuntimeError::Runtime("find requires callback".to_string()))?;
+                for (i, v) in arr.iter().enumerate() {
+                    let r = self.call_value(&f, &[v.clone(), Value::Number(i as f64)])?;
+                    if r.is_truthy() {
+                        return Ok(Some(v.clone()));
+                    }
+                }
+                Value::Null
+            }
+            "concat" => {
+                let mut out = arr.to_vec();
+                for a in args {
+                    if let Value::Array(b) = a {
+                        if out.len() + b.len() > MAX_ARRAY_LENGTH {
+                            return Err(RuntimeError::Runtime(format!(
+                                "concat would exceed max array length {}",
+                                MAX_ARRAY_LENGTH
+                            )));
+                        }
+                        out.extend(b.iter().cloned());
+                    } else {
+                        if out.len() >= MAX_ARRAY_LENGTH {
+                            return Err(RuntimeError::Runtime(format!(
+                                "concat would exceed max array length {}",
+                                MAX_ARRAY_LENGTH
+                            )));
+                        }
+                        out.push(a.clone());
+                    }
+                }
+                Value::Array(out)
+            }
+            _ => return Ok(None),
+        };
+        Ok(Some(result))
+    }
+
+    /// String instance methods (JS subset for hooks).
+    fn string_method(&mut self, name: &str, s: &str, _args: &[Value]) -> Result<Option<Value>, RuntimeError> {
+        let result = match name {
+            "split" => {
+                let sep = _args
+                    .first()
+                    .and_then(|v| if let Value::String(x) = v { Some(x.as_str()) } else { None })
+                    .unwrap_or("");
+                let parts: Vec<Value> = if sep.is_empty() {
+                    s.chars().map(|c| Value::String(c.to_string())).collect()
+                } else {
+                    s.split(sep).map(|p| Value::String(p.to_string())).collect()
+                };
+                Value::Array(parts)
+            }
+            "trim" => Value::String(s.trim().to_string()),
+            "startsWith" => {
+                let prefix = _args
+                    .first()
+                    .and_then(|v| if let Value::String(x) = v { Some(x.as_str()) } else { None })
+                    .unwrap_or("");
+                Value::Bool(s.starts_with(prefix))
+            }
+            "indexOf" => {
+                let sub = _args
+                    .first()
+                    .and_then(|v| if let Value::String(x) = v { Some(x.as_str()) } else { None })
+                    .unwrap_or("");
+                let start = _args
+                    .get(1)
+                    .and_then(|v| if let Value::Number(n) = v { Some(*n as isize) } else { None })
+                    .unwrap_or(0);
+                let cu = s.encode_utf16().count() as isize;
+                let idx = if sub.is_empty() {
+                    let mut fi = start;
+                    if fi < 0 {
+                        fi = cu + fi;
+                    }
+                    fi.clamp(0, cu) as f64
+                } else if start <= 0 {
+                    s.find(sub).map(|i| i as f64).unwrap_or(-1.0)
+                } else {
+                    s.get(start.max(0) as usize..)
+                        .and_then(|tail| tail.find(sub))
+                        .map(|i| (start.max(0) as usize + i) as f64)
+                        .unwrap_or(-1.0)
+                };
+                Value::Number(idx)
+            }
+            "lastIndexOf" => {
+                let sub = _args
+                    .first()
+                    .and_then(|v| if let Value::String(x) = v { Some(x.as_str()) } else { None })
+                    .unwrap_or("");
+                if sub.is_empty() {
+                    Value::Number(s.encode_utf16().count() as f64)
+                } else if let Some(i) = s.rfind(sub) {
+                    Value::Number(i as f64)
+                } else {
+                    Value::Number(-1.0)
+                }
+            }
+            "slice" => {
+                let len_i = s.encode_utf16().count() as isize;
+                let start_raw = _args
+                    .first()
+                    .and_then(|v| if let Value::Number(n) = v { Some(*n as isize) } else { None })
+                    .unwrap_or(0);
+                let end_raw = _args
+                    .get(1)
+                    .and_then(|v| if let Value::Number(n) = v { Some(*n as isize) } else { None });
+                let mut start = start_raw;
+                let mut end = end_raw.unwrap_or(len_i);
+                if start < 0 {
+                    start = len_i + start;
+                }
+                if end < 0 {
+                    end = len_i + end;
+                }
+                start = start.clamp(0, len_i);
+                end = end.clamp(0, len_i);
+                if start > end {
+                    Value::String(String::new())
+                } else {
+                    let out = utf16_slice_by_units(s, start as usize, end as usize);
+                    Value::String(out)
+                }
+            }
+            "charAt" => {
+                let pos = _args
+                    .first()
+                    .and_then(|v| if let Value::Number(n) = v { Some(*n as isize) } else { None })
+                    .unwrap_or(0);
+                let units: Vec<u16> = s.encode_utf16().collect();
+                let len = units.len() as isize;
+                let mut i = pos;
+                if i < 0 {
+                    i = len + i;
+                }
+                let ui = i as usize;
+                let out = if i < 0 || i >= len {
+                    String::new()
+                } else if ui + 1 < units.len()
+                    && (0xD800..=0xDBFF).contains(&units[ui])
+                    && (0xDC00..=0xDFFF).contains(&units[ui + 1])
+                {
+                    String::from_utf16_lossy(&units[ui..ui + 2])
+                } else if ui < units.len() {
+                    String::from_utf16_lossy(&units[ui..ui + 1])
+                } else {
+                    String::new()
+                };
+                Value::String(out)
+            }
+            "toLowerCase" => Value::String(s.to_lowercase()),
+            "toUpperCase" => Value::String(s.to_uppercase()),
+            _ => return Ok(None),
+        };
+        Ok(Some(result))
+    }
+
     /// Process top-level import declarations and populate env.
     fn process_imports(&mut self) -> Result<(), RuntimeError> {
         for stmt in &self.program.body {
@@ -821,7 +1321,16 @@ impl Runtime {
                     .load_module(source)
                     .map_err(|e| RuntimeError::Host(e))?;
                 if let Some(name) = default_binding {
-                    self.env.borrow_mut().set(name, module.clone());
+                    // Default import: `module.default` when present and non-null; else whole module
+                    // (JSON hooks manifests often omit `default`; `"default": null` must not win over the object.)
+                    let bound = match &module {
+                        Value::Object(o) => match o.get("default") {
+                            Some(v) if !matches!(v, Value::Null) => v.clone(),
+                            _ => module.clone(),
+                        },
+                        _ => module.clone(),
+                    };
+                    self.env.borrow_mut().set(name, bound);
                 }
                 for (local, imported) in named_bindings {
                     let val = match &module {
@@ -837,9 +1346,62 @@ impl Runtime {
         Ok(())
     }
 
+    /// Bind top-level `function name() {}` and `export function name() {}` into module env so hooks can use sibling helpers.
+    fn process_top_level_functions(&mut self) {
+        for stmt in &self.program.body {
+            match stmt {
+                Statement::FunctionDecl {
+                    id: Some(name),
+                    params,
+                    body,
+                    r#async,
+                } => {
+                    let f = Value::Function {
+                        params: params.clone(),
+                        body: body.clone(),
+                        env: self.env.clone(),
+                        is_async: *r#async,
+                        component_hooks: None,
+                        component_module_path: None,
+                    };
+                    self.env.borrow_mut().set(name, f);
+                }
+                Statement::ExportNamed {
+                    declaration: ExportNamedDecl::Function { id, params, body },
+                } => {
+                    let f = Value::Function {
+                        params: params.clone(),
+                        body: body.clone(),
+                        env: self.env.clone(),
+                        is_async: false,
+                        component_hooks: None,
+                        component_module_path: None,
+                    };
+                    self.env.borrow_mut().set(id, f);
+                }
+                _ => {}
+            }
+        }
+    }
+
+    fn run_default_export_body(&mut self, body: &[Statement]) -> Result<Value, RuntimeError> {
+        let mut result = Value::Null;
+        for s in body {
+            match self.eval_stmt(s)? {
+                EvalControl::Return(v) => {
+                    result = v;
+                    break;
+                }
+                EvalControl::Continue => {}
+            }
+        }
+        Ok(result)
+    }
+
     /// Run the default export and return the result.
     pub fn run(&mut self) -> Result<Value, RuntimeError> {
         self.process_imports()?;
+        self.process_top_level_functions();
         let default_name = self
             .analysis
             .default_export
@@ -866,23 +1428,19 @@ impl Runtime {
             None
         });
         if let Some(body) = body {
-            let mut result = Value::Null;
-            for s in &body {
-                if let Statement::Return { argument } = s {
-                    result = argument
-                        .as_ref()
-                        .map(|e| self.eval_expr(e))
-                        .transpose()?
-                        .unwrap_or(Value::Null);
-                    break;
-                }
-                self.eval_stmt(s)?;
-            }
+            self.call_stack.push(default_name.clone());
+            let run_result = self.run_default_export_body(&body);
             self.current_component = None;
-            return Ok(result);
+            return match run_result {
+                Ok(v) => {
+                    self.call_stack.pop();
+                    Ok(v)
+                }
+                Err(e) => Err(self.enrich_err(e)),
+            };
         }
         self.current_component = None;
-        Err(RuntimeError::Runtime("Default export not found".to_string()))
+        Err(self.err("Default export not found"))
     }
 
     /// Get module exports for a given path. Sets component_module_path so instances persist across re-renders.
@@ -918,6 +1476,7 @@ impl Runtime {
     /// Used by load_module when a hook does import(path).
     pub fn get_module_exports(&mut self) -> Result<Value, RuntimeError> {
         self.process_imports()?;
+        self.process_top_level_functions();
         let (params, body, is_async) = match self.program.body.iter().find_map(|stmt| {
             if let Statement::ExportDefault { declaration } = stmt {
                 if let ExportDefaultDecl::Function {
@@ -958,6 +1517,17 @@ impl Runtime {
         exports.insert("default".to_string(), default_fn);
         Ok(Value::Object(exports))
     }
+}
+
+/// Serialize console.log arguments similarly to browser consoles (space-separated).
+fn format_console_message(args: &[Value]) -> String {
+    args.iter()
+        .map(|v| match v {
+            Value::String(s) => s.clone(),
+            _ => serde_json::to_string(&v.to_json()).unwrap_or_else(|_| format!("{:?}", v)),
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 fn values_equal(a: &Value, b: &Value) -> bool {
