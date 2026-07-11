@@ -11,7 +11,7 @@ CleverScript is the JS-like language executed by **relay-runtime** for client ho
 When CleverScript runs as **`server.hooks.*`** modules (`.cs`), the relay-gateway provides virtual modules:
 
 - **`@relay/git`** — `readFile`, `readFileBase64`
-- **`@relay/search/sqlite`** / **`@relay/search/redb`** — `search(ctx)` for QUERY (Rust FTS / filter); preferred over returning `{ plugin: "sqlite" }`
+- **`@relay/search/sqlite`** / **`@relay/search/redb`** — `search(ctx)` for QUERY (Rust FTS / filter); optional `config` path (default tip `search.yaml`); preferred over returning `{ plugin: "sqlite" }`
 - On GET / raster resize paths only: **`@relay/image`**, **`@relay/ipfs`**, **`@relay/md`**
 
 Use top-level **`import { … } from '@relay/…'`**. The global **`Relay`** is **`null`**; prefer imports for new scripts.
