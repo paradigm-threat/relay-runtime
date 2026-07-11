@@ -8,7 +8,13 @@ CleverScript is the JS-like language executed by **relay-runtime** for client ho
 
 ## Server hooks (gateway)
 
-When CleverScript runs as **`server.hooks.*`** modules (`.cs`), the relay-gateway provides virtual modules **`@relay/git`** (`readFile`, `readFileBase64`) and, on GET / raster resize paths only, **`@relay/image`** (`toWebp`). Use top-level **`import { … } from '@relay/git'`** (and **`@relay/image`** where allowed). The global **`Relay`** is **`null`**; prefer imports for new scripts.
+When CleverScript runs as **`server.hooks.*`** modules (`.cs`), the relay-gateway provides virtual modules:
+
+- **`@relay/git`** — `readFile`, `readFileBase64`
+- **`@relay/search/sqlite`** / **`@relay/search/redb`** — `search(ctx)` for QUERY (Rust FTS / filter); preferred over returning `{ plugin: "sqlite" }`
+- On GET / raster resize paths only: **`@relay/image`**, **`@relay/ipfs`**, **`@relay/md`**
+
+Use top-level **`import { … } from '@relay/…'`**. The global **`Relay`** is **`null`**; prefer imports for new scripts.
 
 ---
 
@@ -61,6 +67,12 @@ When CleverScript runs as **`server.hooks.*`** modules (`.cs`), the relay-gatewa
 - `import x from 'source'` — default imports from host modules
 - Host provides: theme, styler, relayRuntime (getThemes, postMessage, getPendingMessages), etc.
 - **Client WASM / Android markdown:** `import { MarkdownRenderer } from '@clevertree/markdown'` — virtual module (not npm): named export **`MarkdownRenderer`** renders markdown to VDOM via **md2ast** built into relay-runtime. **`navigate`** is accepted for backward compatibility only; markdown links default to normal **`href`** navigation (same-origin absolute URLs are not intercepted automatically). For SPA-style routing per repo, pass **`anchorProps`** (shallow-merge object onto each parsed `<a>`) and/or **`anchorOnClick`** (`onClick` applied after merge; wins over `anchorProps.onClick`). The implementation avoids document-level delegated capture—only handlers you attach. **`@clevertree/hook-transpiler`** is an alias for the same module. IR and behavior: **`relay-gateway/docs/RELAY_MARKDOWN_IR.md`**.
+- **Client WASM / Android / desktop video:** `import { VideoPlayer } from '@clevertree/video'` — virtual module: **`VideoPlayer(props)`** returns a native **`relay-video-player`** VNode. Hosts render platform playback (HTML5 `<video>`, ExoPlayer, or desktop external player) with a consistent CleverScript control surface:
+  - **Media:** `src` (required), optional `poster`, `subtitles` (array of `{ src, label?, lang?, default? }` — serialized to `subtitlesJson` for hosts; `.srt` converted to WebVTT on web).
+  - **Native UI:** `controls` (default `true`), `autoPlay`, `muted`, `loop`, `volume`, `playbackRate`.
+  - **External control (CleverScript):** `playing` (bool), `currentTime` (seconds), `command` + `commandSeq` + optional `commandArg` — `1` play, `2` pause, `3` seek to `commandArg`.
+  - **Events:** `onPlay`, `onPause`, `onEnded`, `onTimeUpdate` (throttled ~250ms on web), `onError`, `onLoadedMetadata`, `onSeeked`.
+  - **Desktop (Linux X11):** embeds system **mpv** in the laid-out player rect (native OSC controls + CleverScript props). Requires `mpv` on PATH. Without mpv, shows a placeholder; click opens the system player (`xdg-open` / `open`).
 
 ### 1.8 React Hooks
 
