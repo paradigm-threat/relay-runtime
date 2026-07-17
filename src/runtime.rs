@@ -18,10 +18,13 @@ pub const MAX_RECURSION_DEPTH: usize = 256;
 /// Max array length for literals and concat. Prevents memory exhaustion.
 pub const MAX_ARRAY_LENGTH: usize = 50_000;
 
-/// Control flow from `eval_stmt` (early `return` inside `if` / loops).
+/// Control flow from `eval_stmt` (early `return` / `break` / `continue` inside blocks).
 enum EvalControl {
-    Continue,
+    /// Fall through to the next statement.
+    Next,
     Return(Value),
+    Break,
+    ContinueLoop,
 }
 
 /// UTF-16 code-unit slice (JS `String.prototype.slice` indices are UTF-16 units).
@@ -58,6 +61,25 @@ impl ComponentInstance {
             hook_slots: (0..num_slots)
                 .map(|_| HookSlot::State(Rc::new(RefCell::new(Value::Null))))
                 .collect(),
+            hook_index: 0,
+        }
+    }
+
+    fn with_hook_calls(name: String, calls: &[crate::analysis::HookCallSite]) -> Self {
+        let hook_slots = calls
+            .iter()
+            .map(|c| match c.hook_name.as_str() {
+                "useEffect" => HookSlot::Effect {
+                    deps: Vec::new(),
+                    ran: false,
+                },
+                "useCallback" => HookSlot::Callback(Value::Null),
+                _ => HookSlot::State(Rc::new(RefCell::new(Value::Null))),
+            })
+            .collect();
+        Self {
+            name,
+            hook_slots,
             hook_index: 0,
         }
     }
@@ -213,7 +235,11 @@ impl Runtime {
                 .borrow()
                 .get(name)
                 .ok_or_else(|| RuntimeError::Runtime(format!("Undefined: {}", name))),
-            Expr::Call { callee, arguments } => {
+            Expr::Call {
+                callee,
+                arguments,
+                optional,
+            } => {
                 let args: Vec<Value> = arguments
                     .iter()
                     .map(|a| self.eval_expr(a))
@@ -263,6 +289,9 @@ impl Runtime {
                     }
                 }
                 let f = self.eval_expr(callee)?;
+                if *optional && matches!(&f, Value::Null) {
+                    return Ok(Value::Null);
+                }
                 self.call_value(&f, &args)
             }
             Expr::Binary { left, right, op } => {
@@ -295,16 +324,36 @@ impl Runtime {
                 }
             }
             Expr::Array { elements } => {
-                if elements.len() > MAX_ARRAY_LENGTH {
-                    return Err(RuntimeError::Runtime(format!(
-                        "Array literal exceeds max length {}",
-                        MAX_ARRAY_LENGTH
-                    )));
+                let mut vals = Vec::new();
+                for el in elements {
+                    match el {
+                        ArrayElement::Expr(e) => {
+                            if vals.len() >= MAX_ARRAY_LENGTH {
+                                return Err(RuntimeError::Runtime(format!(
+                                    "Array literal exceeds max length {}",
+                                    MAX_ARRAY_LENGTH
+                                )));
+                            }
+                            vals.push(self.eval_expr(e)?);
+                        }
+                        ArrayElement::Spread(e) => match self.eval_expr(e)? {
+                            Value::Array(a) => {
+                                if vals.len() + a.len() > MAX_ARRAY_LENGTH {
+                                    return Err(RuntimeError::Runtime(format!(
+                                        "Array literal exceeds max length {}",
+                                        MAX_ARRAY_LENGTH
+                                    )));
+                                }
+                                vals.extend(a);
+                            }
+                            _ => {
+                                return Err(RuntimeError::Runtime(
+                                    "Array spread requires an array".to_string(),
+                                ));
+                            }
+                        },
+                    }
                 }
-                let vals: Vec<Value> = elements
-                    .iter()
-                    .map(|e| self.eval_expr(e))
-                    .collect::<Result<_, _>>()?;
                 Ok(Value::Array(vals))
             }
             Expr::Object { properties } => {
@@ -314,11 +363,19 @@ impl Runtime {
                         ObjectExprProp::KeyValue { key, value } => {
                             obj.insert(key.clone(), self.eval_expr(value)?);
                         }
-                        ObjectExprProp::Spread { .. } => {
-                            return Err(RuntimeError::Runtime(
-                                "CleverScript: object spread not supported".to_string(),
-                            ));
-                        }
+                        ObjectExprProp::Spread { argument } => match self.eval_expr(argument)? {
+                            Value::Object(o) => {
+                                for (k, v) in o {
+                                    obj.insert(k, v);
+                                }
+                            }
+                            Value::Null => {}
+                            _ => {
+                                return Err(RuntimeError::Runtime(
+                                    "Object spread requires an object".to_string(),
+                                ));
+                            }
+                        },
                     }
                 }
                 Ok(Value::Object(obj))
@@ -494,6 +551,36 @@ impl Runtime {
                         .map_err(RuntimeError::Runtime)?;
                 }
                 Ok(old)
+            }
+            Expr::PrefixIncr { argument } => {
+                let old = self.eval_expr(argument)?;
+                let n = match &old {
+                    Value::Number(x) => *x,
+                    _ => return Err(RuntimeError::Runtime("++ requires number".to_string())),
+                };
+                let new_val = Value::Number(n + 1.0);
+                if let Expr::Identifier { name } = argument.as_ref() {
+                    self.env
+                        .borrow_mut()
+                        .set_checked(name, new_val.clone())
+                        .map_err(RuntimeError::Runtime)?;
+                }
+                Ok(new_val)
+            }
+            Expr::PrefixDecr { argument } => {
+                let old = self.eval_expr(argument)?;
+                let n = match &old {
+                    Value::Number(x) => *x,
+                    _ => return Err(RuntimeError::Runtime("-- requires number".to_string())),
+                };
+                let new_val = Value::Number(n - 1.0);
+                if let Expr::Identifier { name } = argument.as_ref() {
+                    self.env
+                        .borrow_mut()
+                        .set_checked(name, new_val.clone())
+                        .map_err(RuntimeError::Runtime)?;
+                }
+                Ok(new_val)
             }
             Expr::Assign { left, right } => {
                 let val = self.eval_expr(right)?;
@@ -700,6 +787,10 @@ impl Runtime {
                 (Value::Number(a), Value::Number(b)) => Value::Number(a / b),
                 _ => return Err(RuntimeError::Runtime("Invalid / operands".to_string())),
             },
+            BinaryOp::Mod => match (l, r) {
+                (Value::Number(a), Value::Number(b)) => Value::Number(a % b),
+                _ => return Err(RuntimeError::Runtime("Invalid % operands".to_string())),
+            },
             BinaryOp::Eq => Value::Bool(values_equal(&l, &r)),
             BinaryOp::StrictEq => Value::Bool(values_equal(&l, &r)),
             BinaryOp::Neq => Value::Bool(!values_equal(&l, &r)),
@@ -717,7 +808,6 @@ impl Runtime {
             BinaryOp::Le => Value::Bool(cmp_values(&l, &r, |a, b| a <= b)),
             BinaryOp::Gt => Value::Bool(cmp_values(&l, &r, |a, b| a > b)),
             BinaryOp::Ge => Value::Bool(cmp_values(&l, &r, |a, b| a >= b)),
-            _ => return Err(RuntimeError::Runtime("Unsupported binary op".to_string())),
         })
     }
 
@@ -745,8 +835,11 @@ impl Runtime {
                 } else {
                     args.first().cloned().unwrap_or(Value::Null)
                 };
-                *cell.borrow_mut() = new_val;
-                crate::run_state::set_render_requested();
+                let current = cell.borrow().clone();
+                if current != new_val {
+                    *cell.borrow_mut() = new_val;
+                    crate::run_state::set_render_requested();
+                }
                 Ok(Value::Null)
             }
             Value::Native(native) => native(args).map_err(RuntimeError::Runtime),
@@ -767,9 +860,42 @@ impl Runtime {
                     .unwrap_or_else(|| component_hooks.map(|_| "<component>").unwrap_or("function"));
                 self.call_stack.push(frame.to_string());
                 let child_env = Env::child(env.clone());
-                for (i, param) in params.iter().enumerate() {
-                    let val = args.get(i).cloned().unwrap_or(Value::Null);
+                let mut arg_i = 0usize;
+                for param in params.iter() {
                     let type_name = param.type_annotation.as_ref().map(|t| t.name.clone());
+                    if param.rest {
+                        let rest: Vec<Value> = args.get(arg_i..).unwrap_or(&[]).to_vec();
+                        if rest.len() > MAX_ARRAY_LENGTH {
+                            return Err(RuntimeError::Runtime(format!(
+                                "Rest parameter exceeds max array length {}",
+                                MAX_ARRAY_LENGTH
+                            )));
+                        }
+                        child_env
+                            .borrow_mut()
+                            .set_with_mutability(
+                                &param.name,
+                                Value::Array(rest),
+                                Mutability::Var,
+                                type_name,
+                            )
+                            .map_err(RuntimeError::Runtime)?;
+                        break;
+                    }
+                    let raw = args.get(arg_i).cloned().unwrap_or(Value::Null);
+                    arg_i += 1;
+                    let val = if matches!(&raw, Value::Null) {
+                        if let Some(default_expr) = &param.default {
+                            let prev = std::mem::replace(&mut self.env, child_env.clone());
+                            let d = self.eval_expr(default_expr);
+                            self.env = prev;
+                            d?
+                        } else {
+                            Value::Null
+                        }
+                    } else {
+                        raw
+                    };
                     child_env
                         .borrow_mut()
                         .set_with_mutability(&param.name, val, Mutability::Var, type_name)
@@ -811,7 +937,17 @@ impl Runtime {
                                 result = v;
                                 break;
                             }
-                            EvalControl::Continue => {}
+                            EvalControl::Break => {
+                                return Err(RuntimeError::Runtime(
+                                    "break outside of loop or switch".to_string(),
+                                ));
+                            }
+                            EvalControl::ContinueLoop => {
+                                return Err(RuntimeError::Runtime(
+                                    "continue outside of loop".to_string(),
+                                ));
+                            }
+                            EvalControl::Next => {}
                         }
                     }
                     Ok(())
@@ -832,8 +968,8 @@ impl Runtime {
         }
     }
 
-    /// Evaluate a statement.
-    pub fn eval_stmt(&mut self, stmt: &Statement) -> Result<EvalControl, RuntimeError> {
+    /// Evaluate a statement (internal; used by `run` / component bodies).
+    fn eval_stmt(&mut self, stmt: &Statement) -> Result<EvalControl, RuntimeError> {
         match stmt {
             Statement::VariableDecl {
                 kind,
@@ -869,6 +1005,32 @@ impl Runtime {
                                 }
                             }
                         }
+                    } else if let Pattern::Object { properties } = &decl.id {
+                        let obj = match &val {
+                            Value::Object(o) => Some(o),
+                            _ => None,
+                        };
+                        for prop in properties {
+                            let bind_name = match &prop.value {
+                                Some(p) => match p.as_ref() {
+                                    Pattern::Identifier { name, .. } => name.as_str(),
+                                    _ => {
+                                        return Err(RuntimeError::Runtime(
+                                            "CleverScript: nested object destructuring not supported"
+                                                .to_string(),
+                                        ));
+                                    }
+                                },
+                                None => prop.key.as_str(),
+                            };
+                            let v = obj
+                                .and_then(|o| o.get(&prop.key).cloned())
+                                .unwrap_or(Value::Null);
+                            self.env
+                                .borrow_mut()
+                                .set_with_mutability(bind_name, v, mutability, None)
+                                .map_err(RuntimeError::Runtime)?;
+                        }
                     }
                 }
             }
@@ -880,6 +1042,8 @@ impl Runtime {
                     .unwrap_or(Value::Null);
                 return Ok(EvalControl::Return(val));
             }
+            Statement::Break => return Ok(EvalControl::Break),
+            Statement::Continue => return Ok(EvalControl::ContinueLoop),
             Statement::Expr { expression } => {
                 self.eval_expr(expression)?;
             }
@@ -899,9 +1063,20 @@ impl Runtime {
                 let block_env = Env::child(self.env.clone());
                 let prev_env = std::mem::replace(&mut self.env, block_env);
                 for s in stmts {
-                    if let EvalControl::Return(v) = self.eval_stmt(s)? {
-                        self.env = prev_env;
-                        return Ok(EvalControl::Return(v));
+                    match self.eval_stmt(s)? {
+                        EvalControl::Return(v) => {
+                            self.env = prev_env;
+                            return Ok(EvalControl::Return(v));
+                        }
+                        EvalControl::Break => {
+                            self.env = prev_env;
+                            return Ok(EvalControl::Break);
+                        }
+                        EvalControl::ContinueLoop => {
+                            self.env = prev_env;
+                            return Ok(EvalControl::ContinueLoop);
+                        }
+                        EvalControl::Next => {}
                     }
                 }
                 self.env = prev_env;
@@ -915,9 +1090,18 @@ impl Runtime {
                 let block_env = Env::child(self.env.clone());
                 let prev_env = std::mem::replace(&mut self.env, block_env);
                 if let Some(i) = init {
-                    if let EvalControl::Return(v) = self.eval_stmt(i)? {
-                        self.env = prev_env;
-                        return Ok(EvalControl::Return(v));
+                    match self.eval_stmt(i)? {
+                        EvalControl::Return(v) => {
+                            self.env = prev_env;
+                            return Ok(EvalControl::Return(v));
+                        }
+                        EvalControl::Break | EvalControl::ContinueLoop => {
+                            self.env = prev_env;
+                            return Err(RuntimeError::Runtime(
+                                "break/continue in for-init not allowed".to_string(),
+                            ));
+                        }
+                        EvalControl::Next => {}
                     }
                 }
                 let mut iterations: u64 = 0;
@@ -936,17 +1120,246 @@ impl Runtime {
                             break;
                         }
                     }
+                    let mut broken = false;
                     for s in body {
-                        if let EvalControl::Return(v) = self.eval_stmt(s)? {
-                            self.env = prev_env;
-                            return Ok(EvalControl::Return(v));
+                        match self.eval_stmt(s)? {
+                            EvalControl::Return(v) => {
+                                self.env = prev_env;
+                                return Ok(EvalControl::Return(v));
+                            }
+                            EvalControl::Break => {
+                                broken = true;
+                                break;
+                            }
+                            EvalControl::ContinueLoop => break,
+                            EvalControl::Next => {}
                         }
+                    }
+                    if broken {
+                        break;
                     }
                     if let Some(u) = update {
                         self.eval_expr(u)?;
                     }
                 }
                 self.env = prev_env;
+            }
+            Statement::ForOf {
+                kind,
+                id,
+                right,
+                body,
+            } => {
+                let iterable = self.eval_expr(right)?;
+                let arr = match iterable {
+                    Value::Array(a) => a,
+                    _ => {
+                        return Err(RuntimeError::Runtime(
+                            "for...of requires an array".to_string(),
+                        ));
+                    }
+                };
+                let mutability = match kind {
+                    VarKind::Const => Mutability::Const,
+                    VarKind::Let => Mutability::Let,
+                    VarKind::Var => Mutability::Var,
+                };
+                let mut iterations: u64 = 0;
+                for item in arr {
+                    iterations += 1;
+                    if iterations > MAX_LOOP_ITERATIONS {
+                        return Err(RuntimeError::Runtime(format!(
+                            "Loop exceeded {} iterations (possible infinite loop)",
+                            MAX_LOOP_ITERATIONS
+                        )));
+                    }
+                    let block_env = Env::child(self.env.clone());
+                    block_env
+                        .borrow_mut()
+                        .set_with_mutability(id, item, mutability, None)
+                        .map_err(RuntimeError::Runtime)?;
+                    let prev_env = std::mem::replace(&mut self.env, block_env);
+                    let mut broken = false;
+                    for s in body {
+                        match self.eval_stmt(s)? {
+                            EvalControl::Return(v) => {
+                                self.env = prev_env;
+                                return Ok(EvalControl::Return(v));
+                            }
+                            EvalControl::Break => {
+                                broken = true;
+                                break;
+                            }
+                            EvalControl::ContinueLoop => break,
+                            EvalControl::Next => {}
+                        }
+                    }
+                    self.env = prev_env;
+                    if broken {
+                        break;
+                    }
+                }
+            }
+            Statement::Switch {
+                discriminant,
+                cases,
+            } => {
+                let disc = self.eval_expr(discriminant)?;
+                let mut matched_default: Option<&[Statement]> = None;
+                let mut ran = false;
+                for case in cases {
+                    match &case.test {
+                        Some(t) => {
+                            let tv = self.eval_expr(t)?;
+                            if values_equal(&disc, &tv) {
+                                let block_env = Env::child(self.env.clone());
+                                let prev_env = std::mem::replace(&mut self.env, block_env);
+                                let mut early = false;
+                                for s in &case.consequent {
+                                    match self.eval_stmt(s)? {
+                                        EvalControl::Return(v) => {
+                                            self.env = prev_env.clone();
+                                            return Ok(EvalControl::Return(v));
+                                        }
+                                        EvalControl::Break => {
+                                            early = true;
+                                            break;
+                                        }
+                                        EvalControl::ContinueLoop => {
+                                            self.env = prev_env.clone();
+                                            return Ok(EvalControl::ContinueLoop);
+                                        }
+                                        EvalControl::Next => {}
+                                    }
+                                }
+                                self.env = prev_env;
+                                ran = true;
+                                let _ = early;
+                                break;
+                            }
+                        }
+                        None => {
+                            matched_default = Some(&case.consequent);
+                        }
+                    }
+                    if ran {
+                        break;
+                    }
+                }
+                if !ran {
+                    if let Some(body) = matched_default {
+                        let block_env = Env::child(self.env.clone());
+                        let prev_env = std::mem::replace(&mut self.env, block_env);
+                        for s in body {
+                            match self.eval_stmt(s)? {
+                                EvalControl::Return(v) => {
+                                    self.env = prev_env.clone();
+                                    return Ok(EvalControl::Return(v));
+                                }
+                                EvalControl::Break => break,
+                                EvalControl::ContinueLoop => {
+                                    self.env = prev_env.clone();
+                                    return Ok(EvalControl::ContinueLoop);
+                                }
+                                EvalControl::Next => {}
+                            }
+                        }
+                        self.env = prev_env;
+                    }
+                }
+            }
+            Statement::Try {
+                block,
+                handler,
+                finalizer,
+            } => {
+                let block_env = Env::child(self.env.clone());
+                let prev_env = std::mem::replace(&mut self.env, block_env);
+                let mut control = EvalControl::Next;
+                let try_result: Result<(), RuntimeError> = (|| {
+                    for s in block {
+                        match self.eval_stmt(s)? {
+                            EvalControl::Return(v) => {
+                                control = EvalControl::Return(v);
+                                return Ok(());
+                            }
+                            EvalControl::Break => {
+                                control = EvalControl::Break;
+                                return Ok(());
+                            }
+                            EvalControl::ContinueLoop => {
+                                control = EvalControl::ContinueLoop;
+                                return Ok(());
+                            }
+                            EvalControl::Next => {}
+                        }
+                    }
+                    Ok(())
+                })();
+                self.env = prev_env;
+
+                if let Err(err) = try_result {
+                    if let Some(h) = handler {
+                        let catch_env = Env::child(self.env.clone());
+                        if let Some(param) = &h.param {
+                            catch_env
+                                .borrow_mut()
+                                .set_with_mutability(
+                                    param,
+                                    Value::String(err.to_string()),
+                                    Mutability::Const,
+                                    None,
+                                )
+                                .map_err(RuntimeError::Runtime)?;
+                        }
+                        let prev = std::mem::replace(&mut self.env, catch_env);
+                        for s in &h.body {
+                            match self.eval_stmt(s)? {
+                                EvalControl::Return(v) => {
+                                    control = EvalControl::Return(v);
+                                    break;
+                                }
+                                EvalControl::Break => {
+                                    control = EvalControl::Break;
+                                    break;
+                                }
+                                EvalControl::ContinueLoop => {
+                                    control = EvalControl::ContinueLoop;
+                                    break;
+                                }
+                                EvalControl::Next => {}
+                            }
+                        }
+                        self.env = prev;
+                    } else if finalizer.is_none() {
+                        return Err(err);
+                    }
+                }
+
+                if let Some(fin) = finalizer {
+                    let fin_env = Env::child(self.env.clone());
+                    let prev = std::mem::replace(&mut self.env, fin_env);
+                    for s in fin {
+                        match self.eval_stmt(s)? {
+                            EvalControl::Return(v) => {
+                                self.env = prev;
+                                return Ok(EvalControl::Return(v));
+                            }
+                            EvalControl::Break => {
+                                control = EvalControl::Break;
+                                break;
+                            }
+                            EvalControl::ContinueLoop => {
+                                control = EvalControl::ContinueLoop;
+                                break;
+                            }
+                            EvalControl::Next => {}
+                        }
+                    }
+                    self.env = prev;
+                }
+
+                return Ok(control);
             }
             Statement::While { test, body } => {
                 let mut iterations: u64 = 0;
@@ -960,18 +1373,30 @@ impl Runtime {
                     }
                     let block_env = Env::child(self.env.clone());
                     let prev_env = std::mem::replace(&mut self.env, block_env);
+                    let mut broken = false;
                     for s in body {
-                        if let EvalControl::Return(v) = self.eval_stmt(s)? {
-                            self.env = prev_env;
-                            return Ok(EvalControl::Return(v));
+                        match self.eval_stmt(s)? {
+                            EvalControl::Return(v) => {
+                                self.env = prev_env;
+                                return Ok(EvalControl::Return(v));
+                            }
+                            EvalControl::Break => {
+                                broken = true;
+                                break;
+                            }
+                            EvalControl::ContinueLoop => break,
+                            EvalControl::Next => {}
                         }
                     }
                     self.env = prev_env;
+                    if broken {
+                        break;
+                    }
                 }
             }
             _ => {}
         }
-        Ok(EvalControl::Continue)
+        Ok(EvalControl::Next)
     }
 
     /// Dispatch hook calls to component's hook slots.
@@ -1015,8 +1440,31 @@ impl Runtime {
             }
             "useEffect" => {
                 let callback = args.first().cloned().unwrap_or(Value::Null);
-                if let Value::Function { .. } = callback {
-                    let _ = self.call_value(&callback, &[]);
+                let deps = args.get(1).cloned().unwrap_or(Value::Array(vec![]));
+                let deps_vec = match deps {
+                    Value::Array(a) => a,
+                    _ => vec![],
+                };
+                if !matches!(
+                    comp.hook_slots[slot_idx],
+                    HookSlot::Effect { .. }
+                ) {
+                    comp.hook_slots[slot_idx] = HookSlot::Effect {
+                        deps: Vec::new(),
+                        ran: false,
+                    };
+                }
+                let slot = &mut comp.hook_slots[slot_idx];
+                let HookSlot::Effect { deps: stored, ran } = slot else {
+                    return Err(RuntimeError::Runtime("Hook slot type mismatch".to_string()));
+                };
+                let should_run = !*ran || stored.as_slice() != deps_vec.as_slice();
+                if should_run {
+                    *stored = deps_vec;
+                    *ran = true;
+                    if let Value::Function { .. } = callback {
+                        let _ = self.call_value(&callback, &[]);
+                    }
                 }
                 Value::Null
             }
@@ -1392,7 +1840,17 @@ impl Runtime {
                     result = v;
                     break;
                 }
-                EvalControl::Continue => {}
+                EvalControl::Break => {
+                    return Err(RuntimeError::Runtime(
+                        "break outside of loop or switch".to_string(),
+                    ));
+                }
+                EvalControl::ContinueLoop => {
+                    return Err(RuntimeError::Runtime(
+                        "continue outside of loop".to_string(),
+                    ));
+                }
+                EvalControl::Next => {}
             }
         }
         Ok(result)
@@ -1407,13 +1865,16 @@ impl Runtime {
             .default_export
             .clone()
             .ok_or_else(|| RuntimeError::Runtime("No default export".to_string()))?;
-        let num_hooks = self.analysis.hook_calls.get(&default_name).map(|v| v.len()).unwrap_or(0);
+        let hook_calls = self.analysis.hook_calls.get(&default_name);
+        let num_hooks = hook_calls.map(|v| v.len()).unwrap_or(0);
 
         if self.default_instance.is_none() {
-            self.default_instance = Some(Rc::new(RefCell::new(ComponentInstance::new(
-                default_name.clone(),
-                num_hooks,
-            ))));
+            let instance = if let Some(calls) = hook_calls {
+                ComponentInstance::with_hook_calls(default_name.clone(), calls)
+            } else {
+                ComponentInstance::new(default_name.clone(), num_hooks)
+            };
+            self.default_instance = Some(Rc::new(RefCell::new(instance)));
         }
         let instance = self.default_instance.as_ref().unwrap().clone();
         instance.borrow_mut().hook_index = 0;
@@ -1447,37 +1908,63 @@ impl Runtime {
     pub fn get_module_exports_for_path(&mut self, path: &str) -> Result<Value, RuntimeError> {
         let mut exports = self.get_module_exports()?;
         if let Value::Object(ref mut o) = exports {
-            if let Some(Value::Function {
-                params,
-                body,
-                env,
-                is_async,
-                component_hooks,
-                ..
-            }) = o.remove("default")
-            {
-                o.insert(
-                    "default".to_string(),
-                    Value::Function {
-                        params,
-                        body,
-                        env,
-                        is_async,
-                        component_hooks,
+            for value in o.values_mut() {
+                if let Value::Function {
+                    params,
+                    body,
+                    env,
+                    is_async,
+                    component_hooks,
+                    ..
+                } = value
+                {
+                    *value = Value::Function {
+                        params: params.clone(),
+                        body: body.clone(),
+                        env: env.clone(),
+                        is_async: *is_async,
+                        component_hooks: *component_hooks,
                         component_module_path: Some(path.to_string()),
-                    },
-                );
+                    };
+                }
             }
         }
         Ok(exports)
     }
 
-    /// Get module exports (default export function) without running the component.
+    /// Get module exports (default + named export functions) without running the component.
     /// Used by load_module when a hook does import(path).
     pub fn get_module_exports(&mut self) -> Result<Value, RuntimeError> {
         self.process_imports()?;
         self.process_top_level_functions();
-        let (params, body, is_async) = match self.program.body.iter().find_map(|stmt| {
+        let mut exports = HashMap::new();
+
+        for stmt in &self.program.body {
+            if let Statement::ExportNamed {
+                declaration: ExportNamedDecl::Function { id, params, body },
+            } = stmt
+            {
+                let num_hooks = self
+                    .analysis
+                    .hook_calls
+                    .get(id)
+                    .map(|v| v.len())
+                    .unwrap_or(0);
+                exports.insert(
+                    id.clone(),
+                    Value::Function {
+                        params: params.clone(),
+                        body: body.clone(),
+                        env: self.env.clone(),
+                        is_async: false,
+                        component_hooks: if num_hooks > 0 { Some(num_hooks) } else { None },
+                        component_module_path: None,
+                    },
+                );
+            }
+        }
+
+        if let Some((params, body, is_async)) = self.program.body.iter().find_map(|stmt| {
             if let Statement::ExportDefault { declaration } = stmt {
                 if let ExportDefaultDecl::Function {
                     params,
@@ -1491,30 +1978,35 @@ impl Runtime {
             }
             None
         }) {
-            Some(x) => x,
-            None => return Err(RuntimeError::Runtime("Module has no default export".to_string())),
-        };
-        let default_name = self
-            .analysis
-            .default_export
-            .clone()
-            .unwrap_or_else(|| "<default>".to_string());
-        let num_hooks = self
-            .analysis
-            .hook_calls
-            .get(&default_name)
-            .map(|v| v.len())
-            .unwrap_or(0);
-        let default_fn = Value::Function {
-            params,
-            body,
-            env: self.env.clone(),
-            is_async,
-            component_hooks: Some(num_hooks),
-            component_module_path: None,
-        };
-        let mut exports = HashMap::new();
-        exports.insert("default".to_string(), default_fn);
+            let default_name = self
+                .analysis
+                .default_export
+                .clone()
+                .unwrap_or_else(|| "<default>".to_string());
+            let num_hooks = self
+                .analysis
+                .hook_calls
+                .get(&default_name)
+                .map(|v| v.len())
+                .unwrap_or(0);
+            exports.insert(
+                "default".to_string(),
+                Value::Function {
+                    params,
+                    body,
+                    env: self.env.clone(),
+                    is_async,
+                    component_hooks: Some(num_hooks),
+                    component_module_path: None,
+                },
+            );
+        }
+
+        if exports.is_empty() {
+            return Err(RuntimeError::Runtime(
+                "Module has no default or named exports".to_string(),
+            ));
+        }
         Ok(Value::Object(exports))
     }
 }

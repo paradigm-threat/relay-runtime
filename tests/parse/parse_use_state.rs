@@ -17,7 +17,7 @@ fn test_use_state() {
             panic!("expected array pattern");
         }
         let init = decl.init.as_ref().expect("init");
-        if let Expr::Call { callee, arguments } = init.as_ref() {
+        if let Expr::Call { callee, arguments, .. } = init.as_ref() {
             if let Expr::Identifier { name } = callee.as_ref() {
                 assert_eq!(name, "useState");
             }

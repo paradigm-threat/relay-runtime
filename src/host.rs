@@ -220,3 +220,30 @@ impl Host for ModuleMapHost {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn module_map_loads_named_only_exports_with_module_identity() {
+        let host = ModuleMapHost::new(HashMap::from([(
+            "icons.jsx".to_string(),
+            "export function Icon() { return <span>icon</span> }".to_string(),
+        )]));
+
+        let module = host.borrow().load_module("icons.jsx").unwrap();
+        let Value::Object(exports) = module else {
+            panic!("module exports must be an object");
+        };
+        let Some(Value::Function {
+            component_module_path,
+            ..
+        }) = exports.get("Icon")
+        else {
+            panic!("named Icon export missing");
+        };
+        assert_eq!(component_module_path.as_deref(), Some("icons.jsx"));
+        assert!(!exports.contains_key("default"));
+    }
+}
+

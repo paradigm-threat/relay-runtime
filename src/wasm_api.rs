@@ -153,7 +153,7 @@ fn check_frequent_rerun() {
 
 /// Run hook with a module map for dynamic import() support.
 /// module_map_json: JSON object mapping path -> source, e.g. {"../foo.jsx": "export default..."}
-/// theme_yaml: YAML string (e.g. from theme.yaml). Pass "" if none. Hook can import("@theme").
+/// theme_yaml: legacy host theme; pass "" — hooks load theme via `@clevertree/style` StyleContext.
 /// hooks_manifest_json: JSON string of {hooks: [{id, name, path}, ...]}. Pass "" if none. Hook can import("@hooks").
 /// file: Optional filename for parse errors (e.g. "app.jsx"). Pass "" for none.
 #[wasm_bindgen]
@@ -187,14 +187,6 @@ pub fn run_hook_with_host(
     let module_count = modules.len();
     let inner = ModuleMapHost::new(modules);
 
-    let theme = if theme_yaml.is_empty() {
-        None
-    } else {
-        serde_yaml::from_str::<serde_json::Value>(theme_yaml)
-            .ok()
-            .map(|v| Value::from_json(&v))
-    };
-
     let hooks = if hooks_manifest_json.is_empty() {
         None
     } else {
@@ -205,7 +197,6 @@ pub fn run_hook_with_host(
 
     let wasm_host = Rc::new(RefCell::new(WasmHost {
         inner: inner.clone(),
-        theme,
         hooks,
     }));
     inner.borrow().set_parent_host(wasm_host.clone());
@@ -217,8 +208,17 @@ pub fn run_hook_with_host(
     })?;
     run_state::clear_handler_registry_for_vnode_pass();
     let vnode = value_to_vnode_with_handlers(&result, &mut |v| run_state::register_handler(v)).normalize();
-    let (resolved, inject_css, state_json) =
-        resolve_vnode_styles(vnode, theme_yaml, Platform::Web, 1.0, 1.0, None, false);
+    let effective_yaml = crate::session_theme::effective_theme_yaml(theme_yaml);
+    crate::session_theme::store_unresolved_vnode(vnode.clone());
+    let (resolved, inject_css, state_json) = resolve_vnode_styles(
+        vnode,
+        &effective_yaml,
+        Platform::Web,
+        1.0,
+        1.0,
+        None,
+        false,
+    );
     if let Some(css) = inject_css {
         INJECTED_CSS.with(|c| *c.borrow_mut() = css);
     }
@@ -704,6 +704,7 @@ fn react_module() -> Value {
             params: vec![crate::ast::Param {
                 name: "props".to_string(),
                 rest: false,
+                default: None,
                 type_annotation: None,
             }],
             body: vec![crate::ast::Statement::Return {
@@ -777,11 +778,28 @@ fn wasm_host_fetch_via_js(url: &str, options: Option<&Value>) -> Result<Value, S
     Ok(Value::from_json(&j))
 }
 
-/// Host that adds @theme, @hooks, relay-runtime/themed-styler, and @clevertree/relay-runtime.
+/// Host that adds @clevertree/style, @hooks, relay-runtime/themed-styler, and @clevertree/relay-runtime.
 struct WasmHost {
     inner: HostHandle,
-    theme: Option<Value>,
     hooks: Option<Value>,
+}
+
+impl WasmHost {
+    fn resolve_fetch_url(&self, url: &str) -> String {
+        if url.starts_with("http://") || url.starts_with("https://") {
+            return url.to_string();
+        }
+        if let Some(Value::Object(map)) = self.hooks.as_ref() {
+            if let Some(Value::String(base)) = map.get("relayClientBaseUrl") {
+                let b = base.trim_end_matches('/');
+                let rel = url.trim_start_matches('/');
+                if !b.is_empty() && !rel.is_empty() {
+                    return format!("{b}/{rel}");
+                }
+            }
+        }
+        url.to_string()
+    }
 }
 
 impl Host for WasmHost {
@@ -795,7 +813,7 @@ impl Host for WasmHost {
     }
 
     fn fetch(&self, url: &str, options: Option<&Value>) -> Result<Value, String> {
-        wasm_host_fetch_via_js(url, options)
+        wasm_host_fetch_via_js(&self.resolve_fetch_url(url), options)
     }
     fn navigate(&self, path: &str) -> Result<(), String> {
         self.inner.borrow().navigate(path)
@@ -817,11 +835,8 @@ impl Host for WasmHost {
         if path == "relay-runtime/themed-styler" || path == "relay-runtime/themed-styler.js" {
             return Ok(themed_styler_module());
         }
-        if path == "@theme" || path == "./theme.yaml" {
-            if let Some(ref t) = self.theme {
-                return Ok(t.clone());
-            }
-            return Err("Theme not loaded".to_string());
+        if let Some(result) = crate::style_host::try_load_style_module(path) {
+            return result;
         }
         if path == "@hooks" || path == "./hooks.json" {
             if let Some(ref h) = self.hooks {
@@ -838,6 +853,9 @@ impl Host for WasmHost {
             || path == "@clevertree/hook-transpiler.js"
         {
             return Ok(crate::markdown_host::markdown_module());
+        }
+        if path == "@clevertree/video" || path == "@clevertree/video.js" {
+            return Ok(crate::video_host::video_module());
         }
         self.inner.borrow().load_module(path)
     }

@@ -354,31 +354,22 @@ export default function T() {
     let result = run_hook_persistent(src, host).expect("layout render");
     clear_handler_registry_for_vnode_pass();
     let vnode = value_to_vnode_with_handlers(&result, &mut |v| register_handler(v)).normalize();
-    let (resolved, _, _) =
+    let (resolved, css, _) =
         resolve_vnode_styles(vnode, LAYOUT_THEME_YAML, Platform::Web, 1.0, 1.0, None, false);
+
+    let css = css.expect("web must emit CSS");
+    assert!(
+        css.contains("display:flex") || css.contains(".flex") || css.contains("flex-direction"),
+        "flex classes must appear in stylesheet: {css}"
+    );
 
     let layout_el = find_element_by_id(&resolved, "layout").expect("#layout element");
     match layout_el {
         VNode::Element { props, .. } => {
             assert!(
-                !props.contains_key("className"),
-                "className must be resolved away: {:?}",
+                props.contains_key("className"),
+                "web must keep className for stylesheet targeting: {:?}",
                 props.keys().collect::<Vec<_>>()
-            );
-            let style = props
-                .get("style")
-                .and_then(|p| {
-                    if let PropValue::Style(m) = p {
-                        Some(m)
-                    } else {
-                        None
-                    }
-                })
-                .expect("resolved style on #layout");
-            assert!(
-                style.contains_key("display") || style.contains_key("flexDirection"),
-                "flex classes must produce layout keys: {:?}",
-                style
             );
         }
         _ => panic!("expected Element"),

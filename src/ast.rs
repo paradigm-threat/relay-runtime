@@ -33,10 +33,24 @@ pub enum Statement {
         update: Option<Box<Expr>>,
         body: Vec<Statement>,
     },
+    /// `for (const x of arr) { ... }` — arrays only (no iterators).
+    ForOf {
+        kind: VarKind,
+        id: String,
+        right: Box<Expr>,
+        body: Vec<Statement>,
+    },
     While {
         test: Box<Expr>,
         body: Vec<Statement>,
     },
+    /// Exclusive cases (no fall-through); sugar for if/else chains.
+    Switch {
+        discriminant: Box<Expr>,
+        cases: Vec<SwitchCase>,
+    },
+    Break,
+    Continue,
     Try {
         block: Vec<Statement>,
         handler: Option<CatchClause>,
@@ -50,6 +64,13 @@ pub enum Statement {
     },
     ExportDefault { declaration: Box<ExportDefaultDecl> },
     ExportNamed { declaration: ExportNamedDecl },
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SwitchCase {
+    /// `None` = `default` clause.
+    pub test: Option<Box<Expr>>,
+    pub consequent: Vec<Statement>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -93,8 +114,18 @@ pub struct ObjectProp {
 pub struct Param {
     pub name: String,
     pub rest: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default: Option<Box<Expr>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub type_annotation: Option<TypeAnnotation>,
+}
+
+/// Element of an array literal: expression or `...spread`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "type")]
+pub enum ArrayElement {
+    Expr(Expr),
+    Spread(Box<Expr>),
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -130,6 +161,8 @@ pub enum Expr {
     Call {
         callee: Box<Expr>,
         arguments: Vec<Expr>,
+        #[serde(default)]
+        optional: bool,
     },
     Member {
         object: Box<Expr>,
@@ -151,7 +184,7 @@ pub enum Expr {
         consequent: Box<Expr>,
         alternate: Box<Expr>,
     },
-    Array { elements: Vec<Expr> },
+    Array { elements: Vec<ArrayElement> },
     Object { properties: Vec<ObjectExprProp> },
     TemplateLiteral {
         quasis: Vec<String>,
@@ -161,6 +194,8 @@ pub enum Expr {
     Await { argument: Box<Expr> },
     PostfixIncr { argument: Box<Expr> },
     PostfixDecr { argument: Box<Expr> },
+    PrefixIncr { argument: Box<Expr> },
+    PrefixDecr { argument: Box<Expr> },
     Assign {
         left: Box<Expr>,
         right: Box<Expr>,
@@ -184,6 +219,7 @@ pub enum BinaryOp {
     Sub,
     Mul,
     Div,
+    Mod,
     Eq,
     StrictEq,
     Neq,

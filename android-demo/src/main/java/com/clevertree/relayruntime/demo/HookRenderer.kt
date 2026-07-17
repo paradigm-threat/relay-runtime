@@ -116,14 +116,14 @@ class HookRenderer @JvmOverloads constructor(
                 showError("Entry hook $hookPath not found in assets")
                 return
             }
-            val themeYaml = loadThemeYaml()
+            val themeYaml = ""
             val themeName = RelayRuntime.getCurrentTheme()
             val prefersDark = (context.resources.configuration.uiMode and
                 android.content.res.Configuration.UI_MODE_NIGHT_MASK) ==
                 android.content.res.Configuration.UI_MODE_NIGHT_YES
             val dm = context.resources.displayMetrics
-            val vnodeJson = RelayRuntime.runHookWithHost(
-                source = entrySource,
+            val vnodeJson = runHookStable(
+                entrySource = entrySource,
                 moduleMapJson = moduleMap.toString(),
                 themeYaml = themeYaml,
                 hooksManifestJson = hooksManifest.toString(),
@@ -165,11 +165,6 @@ class HookRenderer @JvmOverloads constructor(
                 val dm = context.resources.displayMetrics
 
                 var themeYaml = ""
-                try {
-                    themeYaml = fetchUrlString(UrlResolve.resolve(baseDir, "theme.yaml"))
-                } catch (e: Exception) {
-                    Log.d(TAG, "remote theme.yaml optional: ${e.message}")
-                }
 
                 var hooksManifest = JSONObject().put("hooks", JSONArray())
                 try {
@@ -227,8 +222,11 @@ class HookRenderer @JvmOverloads constructor(
                     )
                 }
 
-                val vnodeJson = RelayRuntime.runHookWithHost(
-                    source = entrySource,
+                hooksManifest.put("relayClientBaseUrl", base)
+                hooksManifest.put("relayPathSlash", "/")
+
+                val vnodeJson = runHookStable(
+                    entrySource = entrySource,
                     moduleMapJson = moduleMap.toString(),
                     themeYaml = themeYaml,
                     hooksManifestJson = hooksManifest.toString(),
@@ -263,6 +261,45 @@ class HookRenderer @JvmOverloads constructor(
         }.start()
     }
 
+    private fun runHookStable(
+        entrySource: String,
+        moduleMapJson: String,
+        themeYaml: String,
+        hooksManifestJson: String,
+        file: String,
+        themeName: String,
+        prefersDark: Boolean,
+        displayDensity: Float,
+        scaledDensity: Float,
+    ): String {
+        var vnodeJson = RelayRuntime.runHookWithHost(
+            source = entrySource,
+            moduleMapJson = moduleMapJson,
+            themeYaml = themeYaml,
+            hooksManifestJson = hooksManifestJson,
+            file = file,
+            themeName = themeName,
+            prefersDark = prefersDark,
+            displayDensity = displayDensity,
+            scaledDensity = scaledDensity,
+        )
+        repeat(15) {
+            if (!RelayRuntime.consumeRenderRequested()) return vnodeJson
+            vnodeJson = RelayRuntime.runHookWithHost(
+                source = entrySource,
+                moduleMapJson = moduleMapJson,
+                themeYaml = themeYaml,
+                hooksManifestJson = hooksManifestJson,
+                file = file,
+                themeName = themeName,
+                prefersDark = prefersDark,
+                displayDensity = displayDensity,
+                scaledDensity = scaledDensity,
+            )
+        }
+        return vnodeJson
+    }
+
     private fun fetchUrlString(urlString: String): String {
         val url = URL(urlString)
         val conn = url.openConnection() as HttpURLConnection
@@ -277,14 +314,6 @@ class HookRenderer @JvmOverloads constructor(
             conn.inputStream.bufferedReader().readText()
         } finally {
             conn.disconnect()
-        }
-    }
-
-    private fun loadThemeYaml(): String {
-        return try {
-            context.assets.open("theme.yaml").use { it.bufferedReader().readText() }
-        } catch (_: Exception) {
-            ""
         }
     }
 

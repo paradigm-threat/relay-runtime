@@ -118,3 +118,22 @@ export default function App() {
     let result = runtime.run();
     assert!(result.is_err(), "infinite while loop should abort");
 }
+
+#[test]
+fn array_literal_hits_length_limit() {
+    use relay_runtime::host::MockHost;
+    use relay_runtime::run_query_script;
+
+    // Double via concat until near the limit, then spread past it.
+    let src = r#"
+export default function run(ctx) {
+  let a = [1]
+  while (a.length < 30000) {
+    a = a.concat(a)
+  }
+  return [...a, ...a].length
+}
+"#;
+    let result = run_query_script(src, MockHost::new(), &serde_json::json!({}), None, None);
+    assert!(result.is_err(), "oversized array spread should fail");
+}

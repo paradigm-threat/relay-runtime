@@ -321,6 +321,26 @@ fn check_map_keys_in_stmt(stmt: &Statement) -> Result<(), RuntimeError> {
                 check_map_keys_in_expr(u)?;
             }
         }
+        Statement::ForOf { right, body, .. } => {
+            check_map_keys_in_expr(right)?;
+            for s in body {
+                check_map_keys_in_stmt(s)?;
+            }
+        }
+        Statement::Switch {
+            discriminant,
+            cases,
+        } => {
+            check_map_keys_in_expr(discriminant)?;
+            for case in cases {
+                if let Some(t) = &case.test {
+                    check_map_keys_in_expr(t)?;
+                }
+                for s in &case.consequent {
+                    check_map_keys_in_stmt(s)?;
+                }
+            }
+        }
         Statement::While { test, body } => {
             check_map_keys_in_expr(test)?;
             for s in body {
@@ -469,7 +489,10 @@ fn check_map_keys_in_expr(expr: &Expr) -> Result<(), RuntimeError> {
         }
         Expr::Array { elements } => {
             for e in elements {
-                check_map_keys_in_expr(e)?;
+                match e {
+                    ArrayElement::Expr(expr) => check_map_keys_in_expr(expr)?,
+                    ArrayElement::Spread(expr) => check_map_keys_in_expr(expr)?,
+                }
             }
         }
         Expr::Object { properties } => {
@@ -489,6 +512,9 @@ fn check_map_keys_in_expr(expr: &Expr) -> Result<(), RuntimeError> {
                     }
                 }
             }
+        }
+        Expr::PrefixIncr { argument } | Expr::PrefixDecr { argument } => {
+            check_map_keys_in_expr(argument)?;
         }
         _ => {}
     }
@@ -544,7 +570,10 @@ fn collect_hook_calls_in_expr(expr: &Expr, out: &mut Vec<HookCallSite>, slot: &m
         }
         Expr::Array { elements } => {
             for e in elements {
-                collect_hook_calls_in_expr(e, out, slot);
+                match e {
+                    ArrayElement::Expr(expr) => collect_hook_calls_in_expr(expr, out, slot),
+                    ArrayElement::Spread(expr) => collect_hook_calls_in_expr(expr, out, slot),
+                }
             }
         }
         Expr::Object { properties } => {
@@ -707,6 +736,31 @@ fn check_undefined_variables(program: &Program) -> Result<(), RuntimeError> {
                 check_expr_refs(update.as_deref(), &mut scope)?;
                 scope.pop();
             }
+            Statement::ForOf { id, right, body, .. } => {
+                check_expr_refs(Some(right.as_ref()), &mut scope)?;
+                scope.push(HashSet::new());
+                scope.last_mut().unwrap().insert(id.clone());
+                for s in body {
+                    check_stmt_refs(s, &mut scope)?;
+                }
+                scope.pop();
+            }
+            Statement::Switch {
+                discriminant,
+                cases,
+            } => {
+                check_expr_refs(Some(discriminant.as_ref()), &mut scope)?;
+                for case in cases {
+                    if let Some(t) = &case.test {
+                        check_expr_refs(Some(t.as_ref()), &mut scope)?;
+                    }
+                    scope.push(HashSet::new());
+                    for s in &case.consequent {
+                        check_stmt_refs(s, &mut scope)?;
+                    }
+                    scope.pop();
+                }
+            }
             Statement::While { test, body } => {
                 check_expr_refs(Some(test.as_ref()), &mut scope)?;
                 scope.push(HashSet::new());
@@ -785,6 +839,31 @@ fn check_stmt_refs(stmt: &Statement, scope: &mut Vec<HashSet<String>>) -> Result
             check_expr_refs(update.as_deref(), scope)?;
             scope.pop();
         }
+        Statement::ForOf { id, right, body, .. } => {
+            check_expr_refs(Some(right.as_ref()), scope)?;
+            scope.push(HashSet::new());
+            scope.last_mut().unwrap().insert(id.clone());
+            for s in body {
+                check_stmt_refs(s, scope)?;
+            }
+            scope.pop();
+        }
+        Statement::Switch {
+            discriminant,
+            cases,
+        } => {
+            check_expr_refs(Some(discriminant.as_ref()), scope)?;
+            for case in cases {
+                if let Some(t) = &case.test {
+                    check_expr_refs(Some(t.as_ref()), scope)?;
+                }
+                scope.push(HashSet::new());
+                for s in &case.consequent {
+                    check_stmt_refs(s, scope)?;
+                }
+                scope.pop();
+            }
+        }
         Statement::While { test, body } => {
             check_expr_refs(Some(test.as_ref()), scope)?;
             scope.push(HashSet::new());
@@ -793,6 +872,7 @@ fn check_stmt_refs(stmt: &Statement, scope: &mut Vec<HashSet<String>>) -> Result
             }
             scope.pop();
         }
+        Statement::Break | Statement::Continue => {}
         Statement::Try {
             block,
             handler,
@@ -842,7 +922,11 @@ fn check_expr_refs(
             check_expr_refs(Some(right), scope)?;
         }
         Expr::Unary { argument, .. } => check_expr_refs(Some(argument), scope)?,
-        Expr::Call { callee, arguments } => {
+        Expr::Call {
+            callee,
+            arguments,
+            ..
+        } => {
             check_expr_refs(Some(callee), scope)?;
             for a in arguments {
                 check_expr_refs(Some(a), scope)?;
@@ -867,7 +951,10 @@ fn check_expr_refs(
         }
         Expr::Array { elements } => {
             for e in elements {
-                check_expr_refs(Some(e), scope)?;
+                match e {
+                    ArrayElement::Expr(expr) => check_expr_refs(Some(expr), scope)?,
+                    ArrayElement::Spread(expr) => check_expr_refs(Some(expr.as_ref()), scope)?,
+                }
             }
         }
         Expr::Object { properties } => {
@@ -881,6 +968,12 @@ fn check_expr_refs(
         Expr::Assign { left, right } => {
             check_expr_refs(Some(left), scope)?;
             check_expr_refs(Some(right), scope)?;
+        }
+        Expr::PrefixIncr { argument }
+        | Expr::PrefixDecr { argument }
+        | Expr::PostfixIncr { argument }
+        | Expr::PostfixDecr { argument } => {
+            check_expr_refs(Some(argument), scope)?;
         }
         Expr::JsxElement(el) => {
             for prop in &el.props {
@@ -921,9 +1014,6 @@ fn check_expr_refs(
                     check_expr_refs(Some(e), scope)?;
                 }
             }
-        }
-        Expr::PostfixIncr { argument } | Expr::PostfixDecr { argument } => {
-            check_expr_refs(Some(argument), scope)?;
         }
         Expr::TemplateLiteral { expressions, .. } => {
             for e in expressions {

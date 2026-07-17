@@ -1,5 +1,6 @@
 // Scrollable page with all demos — CleverScript-compatible.
 import React from 'react'
+import StyleContext from '@clevertree/style'
 import Home from 'hooks/home.jsx'
 import Settings from 'hooks/settings.jsx'
 import Demo from 'hooks/demo.jsx'
@@ -24,6 +25,14 @@ function Section(props) {
 
 function noop() {}
 export default function App() {
+    return (
+        <StyleContext src="theme.yaml">
+            <AppScroll />
+        </StyleContext>
+    )
+}
+
+function AppScroll() {
     return (
         <div className="flex flex-col bg min-h-screen">
             <div className="p-4 border-b bg-primary rounded-lg">

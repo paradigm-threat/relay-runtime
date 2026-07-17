@@ -1,6 +1,7 @@
 // Main application hook - entry point for runtime-transpiled JSX
 // CleverScript-compatible. Works on web and native (relay-runtime).
 import React, { useState, useEffect, lazy, Suspense } from 'react'
+import StyleContext from '@clevertree/style'
 
 // Lazy load page components — paths must match asset keys in module map (e.g. hooks/home.jsx)
 const Home = lazy(() => import('hooks/home.jsx'))
@@ -27,6 +28,14 @@ function LoadingFallback() {
 }
 
 export default function App() {
+    return (
+        <StyleContext src="theme.yaml">
+            <AppMain />
+        </StyleContext>
+    )
+}
+
+function AppMain() {
     const getInitialState = () => {
         try {
             const storedTab = localStorage.getItem(STORAGE_KEY_ACTIVE_TAB)

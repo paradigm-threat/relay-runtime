@@ -26,45 +26,59 @@ Use top-level **`import { … } from '@relay/…'`**. The global **`Relay`** is 
 - Numbers: `0`, `1.5`, `-3`
 - Strings: `"hello"`, `'world'`
 - **Template literals** `` `…${expr}…` `` — expanded at lex time to string literals and `+` (same meaning as concatenation). Static parts support escapes such as `` \` ``, `\${`, `\\`, `\n`, etc. **MVP caveat:** each `${…}` runs until a matching `}` by **brace depth only**; `{` / `}` inside `"strings"`, `'strings'`, nested `` `…` ``, or comments can confuse the scanner—extract a variable or use `+` for those cases.
-- **String instance helpers** (receiver must be a string): `split(sep?)`, `trim()`, `startsWith(prefix)`, `toLowerCase()`, `toUpperCase()` — useful in server hooks (e.g. case-insensitive file extensions).
+- **String instance helpers** (receiver must be a string): `split(sep?)`, `trim()`, `startsWith(prefix)`, `indexOf`, `lastIndexOf`, `slice`, `charAt`, `toLowerCase()`, `toUpperCase()` — useful in server hooks (e.g. case-insensitive file extensions). `.length` is supported.
 
 ### 1.2 Objects
 
-- Object literals with **string keys only**: `{ a: 1, b: "x" }`
+- Object literals with **identifier keys** (and shorthand): `{ a: 1, b }`
+- Shallow object spread: `{ ...a, b: 2 }` (later keys win; non-object spreads error except `null`)
 - Member access: `obj.key`, `obj["key"]`, `obj?.prop`, `obj?.[i]`
+- Simple object destructuring: `const { a, b } = obj` (identifier keys / rename `const { a: x } = obj`; no nested/rest/defaults)
 - No computed keys in literals
 
 ### 1.3 Arrays
 
 - Array literals: `[]`, `[1, 2, 3]`
+- Shallow array spread: `[...a, x, ...b]` (arrays only; length limit enforced)
 - Length: `arr.length`
 - Index access: `arr[i]` (where `i` is a numeric variable or literal)
-- Building arrays: use `concat` or host-provided helpers (e.g. `arrayConcat(a, b)`); **no** `arr.push()` in core
+- Methods: `map`, `filter`, `find`, `concat`
+- Building arrays: prefer `concat` or spread; **no** `arr.push()` in core
 
 ### 1.4 Operators
 
-- Arithmetic: `+`, `-`, `*`, `/`
+- Arithmetic: `+`, `-`, `*`, `/`, `%`
 - Comparison: `===`, `!==`, `<`, `<=`, `>`, `>=`
 - Logical: `&&`, `||`, `!`
-- Unary: `!`, `-` (negation), `++`, `--` (postfix)
+- Unary: `!`, `-` (negation), `typeof`, `++`, `--` (prefix and postfix)
+- Assignment: `=`, `+=`, `-=`, `*=`, `/=`, `%=`
 - Nullish coalescing: `??` — `a ?? b` returns `b` when `a` is `null`
-- Optional chaining: `?.` — `obj?.prop`, `obj?.[i]` returns `null` when `obj` is `null`
+- Optional chaining: `?.` — `obj?.prop`, `obj?.[i]`, `fn?.()` returns `null` when the base/callee is `null`
 
 ### 1.5 Control Flow
 
 - `if` / `else if` / `else`
 - `for (let i = 0; i < n; i++)` — classic for loops
+- `for (const x of arr)` — **arrays only** (no iterators)
 - `while (cond) { ... }`
+- `switch` / `case` / `default` — exclusive cases (no fall-through); trailing `break` optional
+- `break` / `continue` in loops (and `break` in switch)
+- `try` / `catch` / `finally` — catch binds the error as a string; no `throw` syntax
 
 ### 1.6 Functions
 
-- Arrow functions: `() => x`, `(a, b) => a + b`
-- `async` for top-level component when needed
+- Arrow functions: `() => x`, `(a, b) => a + b`, `(a = 1) => a`, `(...rest) => rest`
+- `function` / `async function` declarations
+- Default parameters: missing or `null` argument uses default (`??`-style)
+- Rest parameters: last param `...rest` binds remaining args as an array
 - `return` statements
 
-### 1.7 Imports
+### 1.7 Imports / exports
 
 - `import x from 'source'` — default imports from host modules
+- Named / namespace imports as supported by the parser
+- `export default function …`
+- `export function name(…)` — named export installed in the module env
 - Host provides: theme, styler, relayRuntime (getThemes, postMessage, getPendingMessages), etc.
 - **Client WASM / Android markdown:** `import { MarkdownRenderer } from '@clevertree/markdown'` — virtual module (not npm): named export **`MarkdownRenderer`** renders markdown to VDOM via **md2ast** built into relay-runtime. **`navigate`** is accepted for backward compatibility only; markdown links default to normal **`href`** navigation (same-origin absolute URLs are not intercepted automatically). For SPA-style routing per repo, pass **`anchorProps`** (shallow-merge object onto each parsed `<a>`) and/or **`anchorOnClick`** (`onClick` applied after merge; wins over `anchorProps.onClick`). The implementation avoids document-level delegated capture—only handlers you attach. **`@clevertree/hook-transpiler`** is an alias for the same module. IR and behavior: **`relay-gateway/docs/RELAY_MARKDOWN_IR.md`**.
 - **Client WASM / Android / desktop video:** `import { VideoPlayer } from '@clevertree/video'` — virtual module: **`VideoPlayer(props)`** returns a native **`relay-video-player`** VNode. Hosts render platform playback (HTML5 `<video>`, ExoPlayer, or desktop external player) with a consistent CleverScript control surface:
@@ -77,16 +91,21 @@ Use top-level **`import { … } from '@relay/…'`**. The global **`Relay`** is 
 ### 1.8 React Hooks
 
 - `useState(initial)` — supported
+- `useEffect`, `useCallback`, `useRef` — provided by the React virtual module (semantics are a subset of React)
 - Hooks must be called in a **static order** (no hooks in conditionals or loops)
 
 ### 1.9 JSX
 
 - Elements: `<div>`, `<span>`, etc.
-- Fragments: `<>...</>` or `<Fragment>...</>`
+- Fragments: `<>...</>`
 - Children: `{expr}` expressions
 - Props: `className`, `key`, `data-*`, etc.
 - No JSX spread: `<Foo {...props}` — pass props explicitly
 - **Templating with variables in JSX** — `{'Hello ' + name}` or `{part1}{part2}`; or use template literals for multi-line / markdown (see §1.1).
+
+### 1.10 Optional type annotations
+
+- Optional annotations on variables/params: `number`, `string`, `boolean`, `object`, `array`, `null` (validated at runtime when present)
 
 ---
 
@@ -94,15 +113,7 @@ Use top-level **`import { … } from '@relay/…'`**. The global **`Relay`** is 
 
 ### 2.1 Optional: template literals vs JSX
 
-Template literals are supported (§1.1). For attribute values and short text, JSX with `+` is often clearer:
-
-| Style | Example |
-|-------|---------|
-| Template | `` `Hello ${name}` `` |
-| Concat | `'Hello ' + name` |
-| JSX | `{'Hello ' + name}` |
-
----
+Template literals are supported (§1.1). For attribute values and short text, JSX with `+` is often clearer.
 
 ### 2.2 Parser / Language Surface
 
@@ -110,17 +121,17 @@ Template literals are supported (§1.1). For attribute values and short text, JS
 |-----------|--------|
 | `==`, `!=` (loose equality) | Not supported — use `===`, `!==` only |
 | Template literals `` `…${x}…` `` | Lowered to `+` at lex; MVP: `${…}` uses naive `{`/`}` depth (see §1.1) |
-| Object/array spread `{...a}`, `[...a]` | Not supported |
-| Complex destructuring | Not supported — simple `const {a} = obj` only |
-| `typeof`, `void`, `delete` | Not supported |
+| Complex / nested destructuring | Not supported — simple object/array patterns only |
+| `void`, `delete` | Not supported |
+| Nested object destructuring / object rest | Not supported |
 
 ### 2.3 Control Flow
 
 | Construct | Status |
 |-----------|--------|
-| `for...of`, `for...in` | Not supported |
-| `do...while`, `switch` | Not supported — use `while` or `if/else` |
-| `try/catch` | Not supported |
+| `for...in` | Not supported |
+| `do...while` | Not supported — use `while` or `if/else` |
+| `throw` | Not supported |
 
 ### 2.4 Objects
 
@@ -135,14 +146,14 @@ Template literals are supported (§1.1). For attribute values and short text, JS
 | Construct | Status |
 |-----------|--------|
 | Dynamic `import()` in hot path | Avoid — complicates hook analysis |
-| Named exports | Single default export per module |
 | `arguments` object | Not supported |
+| Real async / Promises | `async`/`await` are sync passthrough |
 
 ### 2.6 Arrays
 
 | Construct | Status |
 |-----------|--------|
-| `arr.push()`, `arr.pop()`, etc. | Not supported — use `concat` or host helpers |
+| `arr.push()`, `arr.pop()`, etc. | Not supported — use `concat` or spread |
 | Mutable array methods | Not supported — prefer immutable patterns |
 
 ### 2.7 JSX
@@ -184,9 +195,9 @@ To prevent hangs and memory exhaustion, the runtime enforces:
 
 | Limit | Value | Behavior |
 |-------|-------|----------|
-| **Loop iterations** | 100,000 | `for` and `while` abort with error if exceeded (possible infinite loop) |
+| **Loop iterations** | 100,000 | `for`, `for...of`, and `while` abort with error if exceeded (possible infinite loop) |
 | **Recursion depth** | 256 | Function/component call depth; aborts to prevent stack overflow |
-| **Array length** | 50,000 | Array literals, `concat`, `map`, `filter`, `find` reject larger arrays |
+| **Array length** | 50,000 | Array literals, spreads, `concat`, `map`, `filter`, `find`, rest params reject larger arrays |
 
 ---
 
@@ -217,13 +228,15 @@ Siblings and parent components continue to render. This improves reliability com
 | Category | Supported | Not Supported |
 |----------|-----------|---------------|
 | Equality | `===`, `!==` | `==`, `!=` |
-| Optional | `?.`, `??` | — |
-| Spread | — | `{...}`, `[...]` |
-| Unary | `!`, `-`, `++`, `--` (postfix) | `typeof`, `void` |
-| Loops | `for (;;)`, `while` | `for...of`, `for...in`, `do...while` |
-| Objects | string keys, `obj.key` | computed keys, prototype, `this` |
-| Arrays | `length`, `[i]`, `concat` | `push`, `pop`, mutable methods |
-| JSX | elements, fragments, `{expr}` (templating), template literals for strings | spread `{...props}` |
+| Optional | `?.`, `??`, `fn?.()` | — |
+| Spread | `{...}`, `[...]` (shallow) | JSX `{...props}` |
+| Unary | `!`, `-`, `typeof`, `++`/`--` (prefix/postfix) | `void`, `delete` |
+| Loops | `for (;;)`, `for...of` (arrays), `while`, `break`/`continue` | `for...in`, `do...while` |
+| Switch | exclusive `switch`/`case` | fall-through |
+| Objects | identifier keys, destructuring, shallow spread | computed keys, prototype, `this` |
+| Arrays | `length`, `[i]`, `concat`/`map`/`filter`/`find`, spread | `push`, `pop`, mutable methods |
+| Modules | `export default`, `export function` | `arguments` |
+| JSX | elements, fragments `<>`, `{expr}` | spread `{...props}` |
 
 ---
 

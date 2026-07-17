@@ -14,6 +14,7 @@ Render all client hooks in `relay-template/hooks/client/*` with **relay-runtime*
 - [NEXT_STEPS.md](docs/NEXT_STEPS.md) — Ordered work (this repo + Relay clients)
 - [PLAN.md](docs/PLAN.md) — Strategy and repo roles
 - [WEB_WASM_HOST.md](docs/WEB_WASM_HOST.md) — Web: WASM core, minimal JS host
+- [PARALLEL_PROJECT_ONE_WORLD.md](docs/PARALLEL_PROJECT_ONE_WORLD.md) — Brother's WebGL one-world / ABACUS stack and Relay integration milestone
 - [IMPLEMENTATION_PHASES.md](docs/IMPLEMENTATION_PHASES.md) — Phased implementation and test scenarios
 
 ## Phases

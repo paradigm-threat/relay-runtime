@@ -4,6 +4,27 @@
 
 All platforms use **flat inline style** resolution. No cascading, no CSS injection. Web and native behave the same: `className` + tag → resolved `style` per element.
 
+## Theme loading (`@clevertree/style`)
+
+Hooks own theme YAML. Wrap UI in **`StyleContext`** from `@clevertree/style`:
+
+```jsx
+import StyleContext from '@clevertree/style'
+
+export default function MyHook() {
+  return (
+    <StyleContext src="hooks/client/theme.yaml">
+      <div className="my-app">…</div>
+    </StyleContext>
+  )
+}
+```
+
+- **`src`** — repo-relative path to `theme.yaml` (fetched via host `fetch()`).
+- Children render only after YAML is validated and stored in the runtime session.
+- Hosts pass **empty** `theme_yaml` to `run_hook_with_host`; resolution uses the session store.
+- Legacy `@theme` / host-injected theme YAML is removed (pre-release cutover).
+
 ## Merge Order (Lowest → Highest Priority)
 
 1. **Tag defaults** — e.g. `div` gets `width: 100%` (web) or `match_parent` (Android)

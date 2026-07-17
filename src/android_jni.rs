@@ -27,8 +27,7 @@ thread_local! {
     static LAST_STATE: RefCell<String> = RefCell::new(String::new());
     /// Theme name selected by relayRuntime.setTheme() — used on next runRender.
     static CURRENT_THEME: RefCell<String> = RefCell::new("default".to_string());
-    /// Unresolved VNode (with className) for theme-only re-resolve without re-running hook.
-    static LAST_UNRESOLVED_VNODE: RefCell<Option<VNode>> = RefCell::new(None);
+    /// Last effective theme YAML used for resolve (session or legacy host).
     static LAST_THEME_YAML: RefCell<String> = RefCell::new(String::new());
     /// Last display density from JNI (for setThemeAndRender re-resolve).
     static LAST_DISPLAY_DENSITY: RefCell<f32> = RefCell::new(2.0);
@@ -210,6 +209,7 @@ fn react_module() -> Value {
             params: vec![crate::ast::Param {
                 name: "props".to_string(),
                 rest: false,
+                default: None,
                 type_annotation: None,
             }],
             body: vec![crate::ast::Statement::Return {
@@ -334,8 +334,25 @@ fn android_host_http_fetch_sync(url: &str, options_json: &str) -> Result<String,
 
 struct AndroidHost {
     inner: HostHandle,
-    theme: Option<Value>,
     hooks: Option<Value>,
+}
+
+impl AndroidHost {
+    fn resolve_fetch_url(&self, url: &str) -> String {
+        if url.starts_with("http://") || url.starts_with("https://") {
+            return url.to_string();
+        }
+        if let Some(Value::Object(map)) = self.hooks.as_ref() {
+            if let Some(Value::String(base)) = map.get("relayClientBaseUrl") {
+                let b = base.trim_end_matches('/');
+                let rel = url.trim_start_matches('/');
+                if !b.is_empty() && !rel.is_empty() {
+                    return format!("{b}/{rel}");
+                }
+            }
+        }
+        url.to_string()
+    }
 }
 
 impl Host for AndroidHost {
@@ -345,7 +362,8 @@ impl Host for AndroidHost {
 
     fn fetch(&self, url: &str, options: Option<&Value>) -> Result<Value, String> {
         let opts = fetch_options_json(options);
-        let json_str = android_host_http_fetch_sync(url, &opts)?;
+        let resolved = self.resolve_fetch_url(url);
+        let json_str = android_host_http_fetch_sync(&resolved, &opts)?;
         let j: serde_json::Value = serde_json::from_str(&json_str).map_err(|e| e.to_string())?;
         Ok(Value::from_json(&j))
     }
@@ -369,11 +387,8 @@ impl Host for AndroidHost {
         if path == "relay-runtime/themed-styler" || path == "relay-runtime/themed-styler.js" {
             return Ok(themed_styler_module());
         }
-        if path == "@theme" || path == "./theme.yaml" {
-            if let Some(ref t) = self.theme {
-                return Ok(t.clone());
-            }
-            return Err("Theme not loaded".to_string());
+        if let Some(result) = crate::style_host::try_load_style_module(path) {
+            return result;
         }
         if path == "@hooks" || path == "./hooks.json" {
             if let Some(ref h) = self.hooks {
@@ -390,6 +405,9 @@ impl Host for AndroidHost {
             || path == "@clevertree/hook-transpiler.js"
         {
             return Ok(markdown_host::markdown_module());
+        }
+        if path == "@clevertree/video" || path == "@clevertree/video.js" {
+            return Ok(crate::video_host::video_module());
         }
         self.inner.borrow().load_module(path)
     }
@@ -474,14 +492,6 @@ pub extern "system" fn Java_com_clevertree_relayruntime_RelayRuntime_nativeRunHo
     let modules: HashMap<String, String> = serde_json::from_str(&module_map_json).unwrap_or_else(|_| HashMap::new());
     let inner = ModuleMapHost::new(modules);
 
-    let theme = if theme_yaml.is_empty() {
-        None
-    } else {
-        serde_yaml::from_str::<serde_json::Value>(&theme_yaml)
-            .ok()
-            .map(|v| Value::from_json(&v))
-    };
-
     let hooks = if hooks_manifest_json.is_empty() {
         None
     } else {
@@ -492,7 +502,6 @@ pub extern "system" fn Java_com_clevertree_relayruntime_RelayRuntime_nativeRunHo
 
     let android_host = Rc::new(RefCell::new(AndroidHost {
         inner: inner.clone(),
-        theme,
         hooks,
     }));
     inner.borrow().set_parent_host(android_host.clone());
@@ -514,17 +523,18 @@ pub extern "system" fn Java_com_clevertree_relayruntime_RelayRuntime_nativeRunHo
             run_state::clear_handler_registry_for_vnode_pass();
             let vnode = value_to_vnode_with_handlers(&result, &mut |v| run_state::register_handler(v)).normalize();
             let theme_arg = if theme_name_str.is_empty() { None } else { Some(theme_name_str.as_str()) };
+            let effective_yaml = crate::session_theme::effective_theme_yaml(&theme_yaml);
+            crate::session_theme::store_unresolved_vnode(vnode.clone());
             let (resolved, _, state_opt) = resolve_vnode_styles(
-                vnode.clone(),
-                &theme_yaml,
+                vnode,
+                &effective_yaml,
                 Platform::Android,
                 d_density,
                 s_density,
                 theme_arg,
                 prefers_dark_bool,
             );
-            LAST_UNRESOLVED_VNODE.with(|c| *c.borrow_mut() = Some(vnode));
-            LAST_THEME_YAML.with(|c| *c.borrow_mut() = theme_yaml.clone());
+            LAST_THEME_YAML.with(|c| *c.borrow_mut() = effective_yaml);
             if let Some(ref state_json) = state_opt {
                 LAST_STATE.with(|c| *c.borrow_mut() = state_json.clone());
             }
@@ -627,9 +637,9 @@ pub extern "system" fn Java_com_clevertree_relayruntime_RelayRuntime_nativeSetTh
 ) -> jstring {
     let name = jstring_to_string(&mut env, theme_name).unwrap_or_default();
     CURRENT_THEME.with(|c| *c.borrow_mut() = name.clone());
-    let vnode_json = LAST_UNRESOLVED_VNODE.with(|vnode_cell| {
+    let vnode_json = {
         let theme_yaml = LAST_THEME_YAML.with(|c| c.borrow().clone());
-        let vnode_opt = vnode_cell.borrow().clone();
+        let vnode_opt = crate::session_theme::peek_unresolved_vnode();
         match vnode_opt {
             Some(vnode) if !theme_yaml.is_empty() => {
                 let theme_arg = if name.is_empty() { None } else { Some(name.as_str()) };
@@ -652,6 +662,6 @@ pub extern "system" fn Java_com_clevertree_relayruntime_RelayRuntime_nativeSetTh
             }
             _ => String::new(),
         }
-    });
+    };
     new_jstring(&mut env, &vnode_json)
 }

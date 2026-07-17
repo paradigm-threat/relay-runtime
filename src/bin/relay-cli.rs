@@ -145,23 +145,6 @@ fn collect_files(dir: &Path) -> Vec<PathBuf> {
     out
 }
 
-fn line_col_for_offset(source: &str, offset: usize) -> (usize, usize) {
-    let mut line = 1;
-    let mut col = 1;
-    for (i, c) in source.chars().enumerate() {
-        if i >= offset {
-            break;
-        }
-        if c == '\n' {
-            line += 1;
-            col = 1;
-        } else {
-            col += 1;
-        }
-    }
-    (line, col)
-}
-
 fn compile_file(path: &Path, source: &str, _rel: &str) -> Vec<Diag> {
     let mut diags = Vec::new();
 
@@ -283,8 +266,6 @@ fn resolve_import_spec(spec: &str, base: &Path) -> Option<String> {
 fn is_builtin_spec(spec: &str) -> bool {
     spec == "react"
         || spec.starts_with("react/")
-        || spec == "@theme"
-        || spec.starts_with("@theme/")
         || spec == "@hooks"
         || spec.starts_with("@hooks/")
         || spec.starts_with("@clevertree/")

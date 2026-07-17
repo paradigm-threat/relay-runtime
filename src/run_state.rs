@@ -12,6 +12,10 @@ use crate::value::Value;
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::rc::Rc;
+use std::sync::Mutex;
+
+/// Serializes concurrent hook runs that share thread-local [`RunState`] (e.g. gateway SSR).
+static HOOK_RUN_LOCK: Mutex<()> = Mutex::new(());
 
 thread_local! {
     static RUN_STATE: RefCell<Option<RunState>> = RefCell::new(None);
@@ -108,6 +112,7 @@ pub fn json_value() -> Value {
 }
 
 /// Build localStorage object for injection into runtime env.
+#[allow(non_snake_case)]
 pub fn localStorage_value() -> Value {
     use crate::value::Value;
     let mut obj = std::collections::HashMap::new();
@@ -165,6 +170,25 @@ pub fn clear_run_state() {
     HANDLER_REGISTRY.with(|h| h.borrow_mut().clear());
     NEXT_HANDLER_ID.with(|n| n.set(1));
     RENDER_REQUESTED.with(|r| r.set(false));
+    LOCAL_STORAGE.with(|m| m.borrow_mut().clear());
+    HOST_FOR_LAZY.with(|h| *h.borrow_mut() = None);
+    crate::session_theme::clear_session_theme();
+}
+
+/// Run `f` while holding the process-wide hook lock and with TLS [`RunState`] cleared
+/// before and after. Use for SSR / multi-threaded hosts so concurrent requests cannot
+/// corrupt thread-local hook state.
+pub fn with_isolated_hook_run<F, R>(f: F) -> R
+where
+    F: FnOnce() -> R,
+{
+    let _guard = HOOK_RUN_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    clear_run_state();
+    let out = f();
+    clear_run_state();
+    out
 }
 
 /// Called when a setter runs; signals the host to re-run and re-render.
@@ -177,11 +201,18 @@ pub fn consume_render_requested() -> bool {
     RENDER_REQUESTED.with(|r| r.replace(false))
 }
 
-/// Host for lazy() imports; from RunState when set, else HOST_FOR_LAZY.
+/// Host for lazy() imports; prefer `HOST_FOR_LAZY` (set before hook run) so fetch during
+/// `run_hook_persistent` does not re-borrow `RUN_STATE` while it is mutably held.
 pub fn get_host_for_lazy() -> Option<HostHandle> {
-    RUN_STATE
-        .with(|r| r.borrow().as_ref().map(|rs| rs.host.clone()))
-        .or_else(|| HOST_FOR_LAZY.with(|h| h.borrow().clone()))
+    HOST_FOR_LAZY
+        .with(|h| h.borrow().clone())
+        .or_else(|| {
+            RUN_STATE.with(|r| {
+                r.try_borrow()
+                    .ok()
+                    .and_then(|state| state.as_ref().map(|rs| rs.host.clone()))
+            })
+        })
 }
 
 /// Clear handler IDs accumulated during the previous VNode walk so only the **current** tree’s

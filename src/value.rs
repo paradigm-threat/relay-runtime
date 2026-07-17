@@ -149,8 +149,11 @@ impl Value {
         match self {
             Value::Setter(cell) => {
                 let new_val = args.first().cloned().unwrap_or(Value::Null);
-                *cell.borrow_mut() = new_val;
-                crate::run_state::set_render_requested();
+                let current = cell.borrow().clone();
+                if current != new_val {
+                    *cell.borrow_mut() = new_val;
+                    crate::run_state::set_render_requested();
+                }
                 Ok(Value::Null)
             }
             _ => Err(crate::error::RuntimeError::Runtime("Not a setter".to_string())),

@@ -2,7 +2,7 @@
 
 **Goal:** Build and test relay-runtime on all major OS targets (web, Android, Windows, macOS) with a focus on **rendering efficiency**, **accuracy**, and **minimal rerender overhead**. Rely on native components for performance-critical domains (audio, video, gaming).
 
-**Rendering strategy:** Custom rendering based on **themed-styler** — no webview, no Tauri. themed-styler is the single source of truth for structure and UI style across all platforms.
+**Rendering strategy:** Theme styling is **compiled into relay-runtime** via the **themed-styler** path crate ([POLICY.md](POLICY.md)) — no separate npm/WASM consumer artifact. No webview, no Tauri.
 
 ---
 
@@ -10,11 +10,12 @@
 
 | Platform | Status | Notes |
 |----------|--------|-------|
-| **Web (WASM)** | ✅ Complete | `wasm-pack build`, `relay-runtime-web.js`, `test-wasm.sh`, bootstrap, vnodeToDom, run_hook_with_host |
-| **Native (host)** | ✅ Complete | `relay-cli` binary, unit/integration tests |
-| **Android** | ✅ Demo working | JNI, android-demo APK, VNodeRenderer, HookRenderer.kt, nested relay-hook-renderer support |
-| **Windows** | ❌ Not implemented | No native binary target |
-| **macOS** | ❌ Not implemented | No native binary target |
+| **Web (WASM)** | ✅ Working | `relay-client-web` + vendored `relay-runtime-web.js`; fan-edits e2e |
+| **Desktop (Linux)** | ✅ Working | `relay-runtime-desktop` + `relay-client-desktop`; fan-edits `--verify` |
+| **Android (demo)** | ✅ Working | `relay-runtime/android-demo` APK |
+| **Android (product)** | ✅ Wired | `relay-client-android` + JNI; remote fan-edits gateway |
+| **Native CLI** | ✅ Working | `relay-cli`, integration tests |
+| **Windows / macOS desktop** | ❌ Not implemented | Linux desktop crate exists |
 
 ### Architecture (unchanged)
 

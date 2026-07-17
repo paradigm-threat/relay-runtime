@@ -1,6 +1,7 @@
 package com.clevertree.relayruntime.demo
 
 import android.content.Context
+import android.graphics.Typeface
 import android.graphics.Color
 import android.graphics.drawable.GradientDrawable
 import android.util.Log
@@ -298,21 +299,7 @@ class VNodeRenderer(private val context: Context) {
                         val size = (styleDouble(s, key) ?: 16.0).toFloat()
                         if (view is TextView) view.setTextSize(TypedValue.COMPLEX_UNIT_SP, size)
                     }
-                    "fontWeight" -> {
-                        val w = styleValue(s, key).lowercase()
-                        if ((view is TextView) && (w == "bold" || w == "600" || w == "700")) {
-                            view.setTypeface(null, android.graphics.Typeface.BOLD)
-                        }
-                    }
-                    "androidTypefaceStyle" -> {
-                        val tf = when (styleValue(s, key).lowercase()) {
-                            "bold" -> android.graphics.Typeface.BOLD
-                            "italic" -> android.graphics.Typeface.ITALIC
-                            "bold_italic" -> android.graphics.Typeface.BOLD_ITALIC
-                            else -> android.graphics.Typeface.NORMAL
-                        }
-                        if (view is TextView) view.setTypeface(null, tf)
-                    }
+                    "fontWeight", "fontFamily", "androidTypefaceStyle" -> { /* applyRelayTypeface below */ }
                     "androidTextGravity" -> {
                         if (view is TextView) view.gravity = parseGravity(styleValue(s, key))
                     }
@@ -352,6 +339,9 @@ class VNodeRenderer(private val context: Context) {
             } else if (backgroundColor != null) {
                 view.setBackgroundColor(backgroundColor!!)
             }
+            if (view is TextView) {
+                applyRelayTypeface(view, s)
+            }
         }
 
         // children text for container (div with single text child)
@@ -381,6 +371,26 @@ class VNodeRenderer(private val context: Context) {
                 }
             }
         }
+    }
+
+    private fun applyRelayTypeface(view: TextView, style: JSONObject) {
+        val family = styleValue(style, "fontFamily").lowercase()
+        val weightStr = styleValue(style, "fontWeight").lowercase()
+        val androidStyle = styleValue(style, "androidTypefaceStyle").lowercase()
+        val mono = family.contains("mono")
+        val boldFromWeight = weightStr == "bold"
+            || (weightStr.toIntOrNull()?.let { it >= 600 } == true)
+        val boldFromAndroid = androidStyle == "bold" || androidStyle == "bold_italic"
+        val italic = androidStyle == "italic" || androidStyle == "bold_italic"
+        val bold = boldFromWeight || boldFromAndroid
+        val base = if (mono) Typeface.MONOSPACE else Typeface.SANS_SERIF
+        val styleBits = when {
+            bold && italic -> Typeface.BOLD_ITALIC
+            bold -> Typeface.BOLD
+            italic -> Typeface.ITALIC
+            else -> Typeface.NORMAL
+        }
+        view.typeface = Typeface.create(base, styleBits)
     }
 
     private fun styleFromProps(props: JSONObject?): JSONObject? {

@@ -65,10 +65,16 @@ pub enum Token {
     Arrow,
     Spread,
     Star,
+    Percent, // %
     Add,
     Sub,
     Incr,  // ++
     Decr,  // --
+    PlusEq,  // +=
+    MinusEq, // -=
+    StarEq,  // *=
+    SlashEq, // /=
+    PercentEq, // %=
 
     // End
     Eof,
@@ -95,6 +101,11 @@ pub enum Keyword {
     Import,
     From,
     As,
+    Of,
+    Switch,
+    Case,
+    Break,
+    Continue,
 }
 
 impl Keyword {
@@ -119,6 +130,11 @@ impl Keyword {
             "import" => Some(Keyword::Import),
             "from" => Some(Keyword::From),
             "as" => Some(Keyword::As),
+            "of" => Some(Keyword::Of),
+            "switch" => Some(Keyword::Switch),
+            "case" => Some(Keyword::Case),
+            "break" => Some(Keyword::Break),
+            "continue" => Some(Keyword::Continue),
             "typeof" => None, // Handled as Token::Typeof
             "true" => None, // Handled as Token::True
             "false" => None,
@@ -335,7 +351,12 @@ impl<'a> Lexer<'a> {
                     if inner.is_empty() {
                         segments.push(vec![(Token::String(String::new()), offset_hint)]);
                     } else {
-                        segments.push(inner);
+                        // Parenthesize so `${a + b}` does not become `"" + a + b` (string concat).
+                        let mut wrapped = Vec::with_capacity(inner.len() + 2);
+                        wrapped.push((Token::LParen, offset_hint));
+                        wrapped.extend(inner);
+                        wrapped.push((Token::RParen, offset_hint));
+                        segments.push(wrapped);
                     }
                 }
             }
@@ -430,6 +451,9 @@ impl<'a> Lexer<'a> {
                     self.advance();
                     self.skip_block_comment().map_err(|e| (e, start))?;
                     return self.next_token();
+                } else if self.peek() == Some(&'=') {
+                    self.advance();
+                    Token::SlashEq
                 } else {
                     Token::Slash
                 }
@@ -532,16 +556,37 @@ impl<'a> Lexer<'a> {
                 if self.peek() == Some(&'-') {
                     self.advance();
                     Token::Decr
+                } else if self.peek() == Some(&'=') {
+                    self.advance();
+                    Token::MinusEq
                 } else {
                     Token::Sub
                 }
             }
-            '*' => Token::Star,
+            '*' => {
+                if self.peek() == Some(&'=') {
+                    self.advance();
+                    Token::StarEq
+                } else {
+                    Token::Star
+                }
+            }
+            '%' => {
+                if self.peek() == Some(&'=') {
+                    self.advance();
+                    Token::PercentEq
+                } else {
+                    Token::Percent
+                }
+            }
             '$' => self.read_ident_or_keyword('$'),
             '+' => {
                 if self.peek() == Some(&'+') {
                     self.advance();
                     Token::Incr
+                } else if self.peek() == Some(&'=') {
+                    self.advance();
+                    Token::PlusEq
                 } else {
                     Token::Add
                 }

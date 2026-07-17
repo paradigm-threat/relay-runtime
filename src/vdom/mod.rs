@@ -125,10 +125,6 @@ where
     }
 }
 
-fn value_props_to_map(v: &Value) -> HashMap<String, PropValue> {
-    value_props_to_map_with_handlers(v, &mut |_| 0)
-}
-
 fn value_props_to_map_with_handlers<F>(v: &Value, register: &mut F) -> HashMap<String, PropValue>
 where
     F: FnMut(&Value) -> u32,
@@ -136,7 +132,7 @@ where
     let mut out = HashMap::new();
     if let Value::Object(obj) = v {
         for (k, v) in obj {
-            if let Some(pv) = value_to_prop_with_handlers(v, register) {
+            if let Some(pv) = value_to_prop_with_handlers(k, v, register) {
                 out.insert(k.clone(), pv);
             }
         }
@@ -144,11 +140,21 @@ where
     out
 }
 
-fn value_to_prop(v: &Value) -> Option<PropValue> {
-    value_to_prop_with_handlers(v, &mut |_| 0)
+fn object_to_style_map(obj: &HashMap<String, Value>) -> HashMap<String, String> {
+    obj.iter()
+        .filter_map(|(k, v)| {
+            let s = match v {
+                Value::String(s) => s.clone(),
+                Value::Number(n) => n.to_string(),
+                Value::Bool(b) => b.to_string(),
+                _ => return None,
+            };
+            Some((k.clone(), s))
+        })
+        .collect()
 }
 
-fn value_to_prop_with_handlers<F>(v: &Value, register: &mut F) -> Option<PropValue>
+fn value_to_prop_with_handlers<F>(key: &str, v: &Value, register: &mut F) -> Option<PropValue>
 where
     F: FnMut(&Value) -> u32,
 {
@@ -158,29 +164,44 @@ where
         Value::Bool(b) => Some(PropValue::Bool(*b)),
         Value::Object(obj) => {
             if obj.get("type").and_then(|t| {
-                if let Value::String(s) = t { Some(s.as_str()) } else { None }
-            }) == Some("element") {
+                if let Value::String(s) = t {
+                    Some(s.as_str())
+                } else {
+                    None
+                }
+            }) == Some("element")
+            {
                 None
+            } else if key == "style" {
+                // Always treat `style={{...}}` as a style map — including layout-only
+                // keys (display, gridTemplateColumns, gap, …) that the old heuristic dropped.
+                Some(PropValue::Style(object_to_style_map(obj)))
             } else if obj.keys().any(|k| {
                 [
-                    "color", "backgroundColor", "fontSize", "fontWeight",
-                    "padding", "paddingTop", "paddingBottom", "paddingLeft", "paddingRight",
-                    "margin", "marginTop", "marginBottom", "marginLeft", "marginRight",
+                    "color",
+                    "backgroundColor",
+                    "fontSize",
+                    "fontWeight",
+                    "padding",
+                    "paddingTop",
+                    "paddingBottom",
+                    "paddingLeft",
+                    "paddingRight",
+                    "margin",
+                    "marginTop",
+                    "marginBottom",
+                    "marginLeft",
+                    "marginRight",
+                    "display",
+                    "flexDirection",
+                    "gridTemplateColumns",
+                    "gap",
+                    "alignItems",
+                    "justifyContent",
                 ]
                 .contains(&k.as_str())
             }) {
-                let style: HashMap<String, String> = obj
-                    .iter()
-                    .filter_map(|(k, v)| {
-                        let s = match v {
-                            Value::String(s) => s.clone(),
-                            Value::Number(n) => n.to_string(),
-                            _ => return None,
-                        };
-                        Some((k.clone(), s))
-                    })
-                    .collect();
-                Some(PropValue::Style(style))
+                Some(PropValue::Style(object_to_style_map(obj)))
             } else {
                 None
             }
@@ -287,20 +308,20 @@ fn collect_usage_rec(
         if !t.is_empty() {
             tags.insert(t.to_string());
         }
-        let mut className = String::new();
+        let mut class_name = String::new();
         if let Some(props) = el.get("props") {
             if let Some(cv) = props.get("className") {
                 if let Some(s) = cv.get("value").and_then(|x| x.as_str()) {
-                    className = s.to_string();
+                    class_name = s.to_string();
                 } else if let Some(s) = cv.get("String").and_then(|x| x.as_str()) {
-                    className = s.to_string();
+                    class_name = s.to_string();
                 } else if let Some(s) = cv.as_str() {
-                    className = s.to_string();
+                    class_name = s.to_string();
                 }
             }
         }
-        if !className.is_empty() {
-            for c in className.trim().split_whitespace().filter(|s| !s.is_empty()) {
+        if !class_name.is_empty() {
+            for c in class_name.trim().split_whitespace().filter(|s| !s.is_empty()) {
                 classes.insert(c.to_string());
                 if !t.is_empty() {
                     tag_classes.insert(format!("{}|{}", t, c));
