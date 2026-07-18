@@ -82,6 +82,130 @@ function normalizeStyleValue(property, value) {
   return `${stringValue}px`;
 }
 
+const SVG_NS = 'http://www.w3.org/2000/svg';
+/** Lowercase tags that must be created in the SVG namespace (createElement puts them in HTML). */
+const SVG_TAGS = new Set([
+  'svg', 'path', 'circle', 'rect', 'line', 'polyline', 'polygon', 'ellipse',
+  'g', 'defs', 'use', 'symbol', 'text', 'tspan', 'clippath', 'mask',
+  'lineargradient', 'radialgradient', 'stop', 'foreignobject', 'image',
+  'marker', 'pattern', 'title', 'desc',
+]);
+/** Mixed-case SVG tag names required by createElementNS. */
+const SVG_TAG_NAME = {
+  clippath: 'clipPath',
+  lineargradient: 'linearGradient',
+  radialgradient: 'radialGradient',
+  foreignobject: 'foreignObject',
+};
+
+function createVnodeDomElement(tag) {
+  const lower = String(tag || '').toLowerCase();
+  if (SVG_TAGS.has(lower)) {
+    return document.createElementNS(SVG_NS, SVG_TAG_NAME[lower] || lower);
+  }
+  return document.createElement(tag);
+}
+
+function setVnodeDomAttribute(el, key, str) {
+  if (key === 'className') {
+    if (el.namespaceURI === SVG_NS) el.setAttribute('class', str);
+    else el.className = str;
+    return;
+  }
+  if (key.startsWith('data') && key.length > 4) {
+    const attr = 'data-' + key.slice(4).replace(/([A-Z])/g, '-$1').toLowerCase().replace(/^-/, '');
+    el.setAttribute(attr, str);
+    return;
+  }
+  el.setAttribute(key, str);
+}
+
+/**
+ * Apply VNode props onto a DOM element (strings, numbers, bools, style, handlers).
+ * @param {Element} el
+ * @param {string} tag
+ * @param {object} props
+ * @param {function(number): void} invokeHandler
+ * @param {function(): void|null} onAfterInvoke
+ */
+function applyVnodeDomProps(el, tag, props, invokeHandler, onAfterInvoke) {
+  if (!props) return;
+  const relayControlled = propBoolFromVnodeProps(props, 'relayControlled');
+  for (const [k, val] of Object.entries(props)) {
+    if (val && typeof val === 'object' && (val.type === 'Handler' || val.type === 'HandlerId') && typeof val.value === 'number') {
+      const eventType = k.startsWith('on') ? k.slice(2).toLowerCase() : k;
+      if (tag === 'a' && eventType === 'click' && !relayControlled) {
+        continue;
+      }
+      const handlerId = val.value;
+      el.addEventListener(eventType, (e) => {
+        if (tag === 'a' && eventType === 'click' && relayControlled) {
+          if (!shouldInterceptRelayControlledAnchorClick(e, el)) return;
+          e.preventDefault();
+        }
+        try {
+          invokeHandler(handlerId);
+        } catch (err) {
+          console.error('[relay-runtime] Handler invocation failed:', err);
+          throw err;
+        }
+        if (onAfterInvoke && consume_render_requested()) onAfterInvoke();
+      });
+      continue;
+    }
+    if (k === 'style') {
+      const styleObj = val && typeof val === 'object' && val.type === 'Style' ? val.value : val;
+      if (styleObj && typeof styleObj === 'object') {
+        for (const [pk, pv] of Object.entries(styleObj)) {
+          if (pv != null && typeof pv !== 'object') {
+            el.style[pk] = normalizeStyleValue(pk, pv);
+          }
+        }
+      }
+      continue;
+    }
+    if (val && typeof val === 'object' && val.type === 'Bool') {
+      if (val.value) setVnodeDomAttribute(el, k, '');
+      else if (k === 'disabled' || k === 'checked' || k === 'selected' || k === 'readOnly') {
+        el[k === 'readOnly' ? 'readOnly' : k] = false;
+      }
+      continue;
+    }
+    if (typeof val === 'boolean') {
+      if (val) setVnodeDomAttribute(el, k, '');
+      continue;
+    }
+    const str =
+      val && typeof val === 'object' && val.type === 'String' && val.value !== undefined
+        ? val.value
+        : typeof val === 'string'
+          ? val
+          : val && typeof val === 'object' && val.type === 'Number' && val.value !== undefined
+            ? String(val.value)
+            : typeof val === 'number'
+              ? String(val)
+              : null;
+    if (str != null) setVnodeDomAttribute(el, k, str);
+  }
+}
+
+function appendVnodeDomChildren(el, props, children, invokeHandler, onAfterInvoke) {
+  if (!children || !Array.isArray(children)) return;
+  const parentStyle = props?.style?.value ?? props?.style ?? {};
+  const isRow = parentStyle.flexDirection === 'row' || (!parentStyle.flexDirection && parentStyle.display === 'flex');
+  const spacing = isRow ? (parentStyle.spaceX ?? parentStyle.gap) : (parentStyle.spaceY ?? parentStyle.gap);
+  for (let i = 0; i < children.length; i++) {
+    const child = vnodeToDom(children[i], invokeHandler, onAfterInvoke);
+    if (child) {
+      if (i > 0 && spacing != null && child.style) {
+        const px = typeof spacing === 'number' ? spacing + 'px' : String(spacing);
+        child.style[isRow ? 'marginLeft' : 'marginTop'] = px;
+      }
+      el.appendChild(child);
+    }
+  }
+}
+
 /**
  * Install globalThis.__relay_host_fetch(url, initJson) for CleverScript Host.fetch (sync XHR).
  * Safe to call multiple times; first wins unless already set.
@@ -568,72 +692,9 @@ export function vnodeToDom(v, invokeHandler = invoke_handler, onAfterInvoke = nu
       }
       return frag;
     }
-    const el = document.createElement(tag);
-    if (props) {
-      const relayControlled = propBoolFromVnodeProps(props, 'relayControlled');
-      for (const [k, val] of Object.entries(props)) {
-        if (val && typeof val === 'object' && (val.type === 'Handler' || val.type === 'HandlerId') && typeof val.value === 'number') {
-          const eventType = k.startsWith('on') ? k.slice(2).toLowerCase() : k;
-          if (tag === 'a' && eventType === 'click' && !relayControlled) {
-            continue;
-          }
-          const handlerId = val.value;
-          el.addEventListener(eventType, (e) => {
-            if (tag === 'a' && eventType === 'click' && relayControlled) {
-              if (!shouldInterceptRelayControlledAnchorClick(e, el)) return;
-              e.preventDefault();
-            }
-            try {
-              invokeHandler(handlerId);
-            } catch (err) {
-              console.error('[relay-runtime] Handler invocation failed:', err);
-              throw err;
-            }
-            if (onAfterInvoke && consume_render_requested()) onAfterInvoke();
-          });
-          continue;
-        }
-        if (k === 'style') {
-          const styleObj = val && typeof val === 'object' && val.type === 'Style' ? val.value : val;
-          if (styleObj && typeof styleObj === 'object') {
-            for (const [pk, pv] of Object.entries(styleObj)) {
-              if (pv != null && typeof pv !== 'object') {
-                el.style[pk] = normalizeStyleValue(pk, pv);
-              }
-            }
-          }
-          continue;
-        }
-        const str =
-          val && typeof val === 'object' && val.type === 'String' && val.value !== undefined
-            ? val.value
-            : typeof val === 'string'
-              ? val
-              : null;
-        if (str != null) {
-          if (k === 'className') el.className = str;
-          else if (k.startsWith('data') && k.length > 4) {
-            const attr = 'data-' + k.slice(4).replace(/([A-Z])/g, '-$1').toLowerCase().replace(/^-/, '');
-            el.setAttribute(attr, str);
-          } else el.setAttribute(k, str);
-        }
-      }
-    }
-    if (children && Array.isArray(children)) {
-      const parentStyle = props?.style?.value ?? props?.style ?? {};
-      const isRow = parentStyle.flexDirection === 'row' || (!parentStyle.flexDirection && parentStyle.display === 'flex');
-      const spacing = isRow ? (parentStyle.spaceX ?? parentStyle.gap) : (parentStyle.spaceY ?? parentStyle.gap);
-      for (let i = 0; i < children.length; i++) {
-        const child = vnodeToDom(children[i], invokeHandler, onAfterInvoke);
-        if (child) {
-          if (i > 0 && spacing != null && child.style) {
-            const px = typeof spacing === 'number' ? spacing + 'px' : String(spacing);
-            child.style[isRow ? 'marginLeft' : 'marginTop'] = px;
-          }
-          el.appendChild(child);
-        }
-      }
-    }
+    const el = createVnodeDomElement(tag);
+    applyVnodeDomProps(el, tag, props, invokeHandler, onAfterInvoke);
+    appendVnodeDomChildren(el, props, children, invokeHandler, onAfterInvoke);
     return el;
   }
   if (v.type === 'element') {
@@ -641,72 +702,9 @@ export function vnodeToDom(v, invokeHandler = invoke_handler, onAfterInvoke = nu
     if (rawTag === 'relay-video-player') {
       return buildRelayVideoPlayer(v.props || {}, invokeHandler, onAfterInvoke);
     }
-    const el = document.createElement(rawTag);
-    if (v.props) {
-      const relayControlled = propBoolFromVnodeProps(v.props, 'relayControlled');
-      for (const [k, val] of Object.entries(v.props)) {
-        if (val && typeof val === 'object' && (val.type === 'Handler' || val.type === 'HandlerId') && typeof val.value === 'number') {
-          const eventType = k.startsWith('on') ? k.slice(2).toLowerCase() : k;
-          if (rawTag === 'a' && eventType === 'click' && !relayControlled) {
-            continue;
-          }
-          const handlerId = val.value;
-          el.addEventListener(eventType, (e) => {
-            if (rawTag === 'a' && eventType === 'click' && relayControlled) {
-              if (!shouldInterceptRelayControlledAnchorClick(e, el)) return;
-              e.preventDefault();
-            }
-            try {
-              invokeHandler(handlerId);
-            } catch (err) {
-              console.error('[relay-runtime] Handler invocation failed:', err);
-              throw err;
-            }
-            if (onAfterInvoke && consume_render_requested()) onAfterInvoke();
-          });
-          continue;
-        }
-        if (k === 'style') {
-          const styleObj = val && typeof val === 'object' && val.type === 'Style' ? val.value : val;
-          if (styleObj && typeof styleObj === 'object') {
-            for (const [pk, pv] of Object.entries(styleObj)) {
-              if (pv != null && typeof pv !== 'object') {
-                el.style[pk] = normalizeStyleValue(pk, pv);
-              }
-            }
-          }
-          continue;
-        }
-        const str =
-          val && typeof val === 'object' && val.type === 'String' && val.value !== undefined
-            ? val.value
-            : typeof val === 'string'
-              ? val
-              : null;
-        if (str != null) {
-          if (k === 'className') el.className = str;
-          else if (k.startsWith('data') && k.length > 4) {
-            const attr = 'data-' + k.slice(4).replace(/([A-Z])/g, '-$1').toLowerCase().replace(/^-/, '');
-            el.setAttribute(attr, str);
-          } else el.setAttribute(k, str);
-        }
-      }
-    }
-    if (v.children && Array.isArray(v.children)) {
-      const parentStyle = v.props?.style?.value ?? v.props?.style ?? {};
-      const isRow = parentStyle.flexDirection === 'row' || (!parentStyle.flexDirection && parentStyle.display === 'flex');
-      const spacing = isRow ? (parentStyle.spaceX ?? parentStyle.gap) : (parentStyle.spaceY ?? parentStyle.gap);
-      for (let i = 0; i < v.children.length; i++) {
-        const child = vnodeToDom(v.children[i], invokeHandler, onAfterInvoke);
-        if (child) {
-          if (i > 0 && spacing != null && child.style) {
-            const px = typeof spacing === 'number' ? spacing + 'px' : String(spacing);
-            child.style[isRow ? 'marginLeft' : 'marginTop'] = px;
-          }
-          el.appendChild(child);
-        }
-      }
-    }
+    const el = createVnodeDomElement(rawTag);
+    applyVnodeDomProps(el, rawTag, v.props, invokeHandler, onAfterInvoke);
+    appendVnodeDomChildren(el, v.props, v.children, invokeHandler, onAfterInvoke);
     return el;
   }
   if (Array.isArray(v)) {
