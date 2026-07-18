@@ -211,6 +211,8 @@ impl Host for ModuleMapHost {
         let program = crate::parse(&source).map_err(|e| format!("Parse error: {}", e))?;
         let analysis = crate::analyze(&program).map_err(|e| format!("Analysis error: {}", e))?;
         let mut runtime = crate::Runtime::new(program, analysis);
+        // Imported modules need the same builtins as the entry hook (JSON.parse, Array, …).
+        crate::run_state::inject_standard_builtins(&runtime);
         if let Some(ref host) = *self.parent_host.borrow() {
             runtime = runtime.with_host(host.clone());
         }
@@ -223,6 +225,38 @@ impl Host for ModuleMapHost {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn module_map_json_parse_available_in_imported_module() {
+        let host = ModuleMapHost::new(HashMap::from([(
+            "parse.jsx".to_string(),
+            r#"
+export function parseCount(text) {
+  const d = JSON.parse(text)
+  return d.results.length
+}
+"#
+            .to_string(),
+        )]));
+
+        let module = host.borrow().load_module("parse.jsx").unwrap();
+        let Value::Object(exports) = module else {
+            panic!("module exports must be an object");
+        };
+        let Some(f) = exports.get("parseCount") else {
+            panic!("parseCount export missing");
+        };
+        // Call via a tiny runtime entry that imports the helper would be heavier;
+        // Native/Function call through Runtime::call_value needs a Runtime.
+        // Smoke: ensure the export's captured env has JSON.
+        let Value::Function { env, .. } = f else {
+            panic!("parseCount must be a function");
+        };
+        assert!(
+            env.borrow().get("JSON").is_some(),
+            "imported module env must include JSON builtin"
+        );
+    }
 
     #[test]
     fn module_map_loads_named_only_exports_with_module_identity() {

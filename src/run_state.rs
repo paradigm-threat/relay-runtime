@@ -29,6 +29,17 @@ thread_local! {
     pub(crate) static HOST_FOR_LAZY: RefCell<Option<HostHandle>> = RefCell::new(None);
 }
 
+/// Inject Array / JSON / Object / Date / localStorage into a runtime env.
+/// Entry hooks get this via [`run_hook_persistent`]; imported modules must call it too.
+pub fn inject_standard_builtins(runtime: &Runtime) {
+    let mut env = runtime.env.borrow_mut();
+    env.set("localStorage", localStorage_value());
+    env.set("Array", array_value());
+    env.set("JSON", json_value());
+    env.set("Object", object_value());
+    env.set("Date", date_value());
+}
+
 /// Build Array object with isArray for injection into runtime env.
 pub fn array_value() -> Value {
     use crate::value::Value;
@@ -297,11 +308,7 @@ pub fn run_hook_persistent(
             let mut runtime = Runtime::new(program.clone(), analysis.clone())
                 .with_host(host.clone())
                 .with_loaded_instances(loaded.clone());
-            runtime.env.borrow_mut().set("localStorage", localStorage_value());
-            runtime.env.borrow_mut().set("Array", array_value());
-            runtime.env.borrow_mut().set("JSON", json_value());
-            runtime.env.borrow_mut().set("Object", object_value());
-            runtime.env.borrow_mut().set("Date", date_value());
+            inject_standard_builtins(&runtime);
             let result = runtime.run()?;
             let default_instance = runtime
                 .default_instance
@@ -323,11 +330,7 @@ pub fn run_hook_persistent(
             .with_host(rs.host.clone())
             .with_loaded_instances(rs.loaded_instances.clone());
         runtime.default_instance = Some(rs.default_instance.clone());
-        runtime.env.borrow_mut().set("localStorage", localStorage_value());
-        runtime.env.borrow_mut().set("Array", array_value());
-        runtime.env.borrow_mut().set("JSON", json_value());
-        runtime.env.borrow_mut().set("Object", object_value());
-        runtime.env.borrow_mut().set("Date", date_value());
+        inject_standard_builtins(&runtime);
         runtime.run()
     })
 }
