@@ -265,23 +265,52 @@ pub fn invoke_handler(id: u32) -> Result<Value, RuntimeError> {
 }
 
 /// Invoke a CleverScript/native function value with explicit arguments (e.g. per-anchor `href`).
-/// Used by markdown `anchorOnClick` wrappers; same RunState / `Runtime` setup as [`invoke_handler`].
+/// Used by markdown `anchorOnClick` wrappers and **`MarkdownRenderer` `overrides`** during render.
+///
+/// When [`run_hook_persistent`] holds a mutable `RUN_STATE` borrow (first-pass / re-render),
+/// falls back to [`get_host_for_lazy`] so Function overrides can still run. Function values
+/// carry their own env; an empty program is enough for `call_value`.
 pub fn invoke_handler_value(f: &Value, args: &[Value]) -> Result<Value, RuntimeError> {
-    RUN_STATE.with(|r| {
-        let state = r.borrow();
-        let rs = state.as_ref().ok_or_else(|| {
-            RuntimeError::Runtime("No RunState (invoke_handler_value called before run)".to_string())
-        })?;
+    let from_state = RUN_STATE.with(|r| -> Option<Result<Value, RuntimeError>> {
+        let state = r.try_borrow().ok()?;
+        let rs = state.as_ref()?;
         let mut runtime = Runtime::new(rs.program.clone(), rs.analysis.clone())
             .with_host(rs.host.clone())
             .with_loaded_instances(rs.loaded_instances.clone());
         runtime.default_instance = Some(rs.default_instance.clone());
-        runtime.call_value(f, args)
-    })
+        Some(runtime.call_value(f, args))
+    });
+    if let Some(result) = from_state {
+        return result;
+    }
+
+    let host = get_host_for_lazy().ok_or_else(|| {
+        RuntimeError::Runtime(
+            "No RunState/host (invoke_handler_value called outside hook run)".to_string(),
+        )
+    })?;
+    let loaded = RUN_STATE.with(|r| {
+        r.try_borrow()
+            .ok()
+            .and_then(|s| s.as_ref().map(|rs| rs.loaded_instances.clone()))
+    });
+    let mut runtime = Runtime::new(
+        crate::ast::Program { body: vec![] },
+        crate::analysis::AnalysisResult::default(),
+    )
+    .with_host(host);
+    if let Some(loaded) = loaded {
+        runtime = runtime.with_loaded_instances(loaded);
+    }
+    inject_standard_builtins(&runtime);
+    runtime.call_value(f, args)
 }
 
 /// Run hook with persistent state. First call creates RunState; subsequent
 /// calls with the same source reuse it so useState state persists.
+///
+/// Does **not** hold a mutable `RUN_STATE` borrow across `runtime.run()`, so mid-render
+/// calls (markdown overrides, lazy host) can `try_borrow` / use [`HOST_FOR_LAZY`].
 pub fn run_hook_persistent(
     source: &str,
     host: HostHandle,
@@ -291,30 +320,36 @@ pub fn run_hook_persistent(
 
     HOST_FOR_LAZY.with(|h| *h.borrow_mut() = Some(host.clone()));
 
-    RUN_STATE.with(|r| {
+    let reset_source = RUN_STATE.with(|r| {
         let mut state = r.borrow_mut();
         if let Some(ref rs) = *state {
             if rs.source != source {
                 *state = None;
                 HANDLER_REGISTRY.with(|h| h.borrow_mut().clear());
                 NEXT_HANDLER_ID.with(|n| n.set(1));
+                return true;
             }
         }
+        false
+    });
+    let _ = reset_source;
 
-        if state.is_none() {
-            HANDLER_REGISTRY.with(|h| h.borrow_mut().clear());
-            NEXT_HANDLER_ID.with(|n| n.set(1));
-            let loaded = Rc::new(RefCell::new(HashMap::new()));
-            let mut runtime = Runtime::new(program.clone(), analysis.clone())
-                .with_host(host.clone())
-                .with_loaded_instances(loaded.clone());
-            inject_standard_builtins(&runtime);
-            let result = runtime.run()?;
-            let default_instance = runtime
-                .default_instance
-                .clone()
-                .expect("run creates default_instance");
-            *state = Some(RunState {
+    let is_first = RUN_STATE.with(|r| r.borrow().is_none());
+    if is_first {
+        HANDLER_REGISTRY.with(|h| h.borrow_mut().clear());
+        NEXT_HANDLER_ID.with(|n| n.set(1));
+        let loaded = Rc::new(RefCell::new(HashMap::new()));
+        let mut runtime = Runtime::new(program.clone(), analysis.clone())
+            .with_host(host.clone())
+            .with_loaded_instances(loaded.clone());
+        inject_standard_builtins(&runtime);
+        let result = runtime.run()?;
+        let default_instance = runtime
+            .default_instance
+            .clone()
+            .expect("run creates default_instance");
+        RUN_STATE.with(|r| {
+            *r.borrow_mut() = Some(RunState {
                 program,
                 analysis,
                 default_instance,
@@ -322,17 +357,27 @@ pub fn run_hook_persistent(
                 host,
                 source: source.to_string(),
             });
-            return Ok(result);
-        }
+        });
+        return Ok(result);
+    }
 
-        let rs = state.as_ref().unwrap();
-        let mut runtime = Runtime::new(rs.program.clone(), rs.analysis.clone())
-            .with_host(rs.host.clone())
-            .with_loaded_instances(rs.loaded_instances.clone());
-        runtime.default_instance = Some(rs.default_instance.clone());
-        inject_standard_builtins(&runtime);
-        runtime.run()
-    })
+    let (program_r, analysis_r, host_r, loaded_r, default_instance) = RUN_STATE.with(|r| {
+        let state = r.borrow();
+        let rs = state.as_ref().expect("RunState present after is_first check");
+        (
+            rs.program.clone(),
+            rs.analysis.clone(),
+            rs.host.clone(),
+            rs.loaded_instances.clone(),
+            rs.default_instance.clone(),
+        )
+    });
+    let mut runtime = Runtime::new(program_r, analysis_r)
+        .with_host(host_r)
+        .with_loaded_instances(loaded_r);
+    runtime.default_instance = Some(default_instance);
+    inject_standard_builtins(&runtime);
+    runtime.run()
 }
 
 #[cfg(test)]

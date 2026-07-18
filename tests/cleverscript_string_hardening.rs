@@ -164,3 +164,75 @@ export default function run(ctx) {
     );
     assert_eq!(v, Value::String("x/y".to_string()));
 }
+
+
+#[test]
+fn object_literal_can_hold_function_value() {
+    let v = run(r#"
+function Stub() { return 1 }
+export default function run(ctx) {
+  const o = { AutoIndex: Stub }
+  return typeof o.AutoIndex
+}
+"#);
+    assert_eq!(v, Value::String("function".to_string()), "got {v:?}");
+}
+
+#[test]
+fn markdown_renderer_overrides_via_cleverscript_function() {
+    use relay_runtime::host::{HostHandle, MockHost};
+    use relay_runtime::markdown_host;
+    use relay_runtime::run_state::{clear_run_state, run_hook_persistent};
+    use relay_runtime::value::Value;
+    use relay_runtime::vdom::value_to_vnode_with_handlers;
+    use std::collections::HashMap;
+
+    // Regression: Function overrides used to panic (RunState RefCell) or leak <AutoIndex>.
+    clear_run_state();
+    let mock = MockHost::new();
+    {
+        let mut obj = HashMap::new();
+        obj.insert(
+            "useState".to_string(),
+            Value::ReactHook("useState".to_string()),
+        );
+        mock.borrow().register_module("react", Value::Object(obj.clone()));
+        mock.borrow()
+            .register_module("react.js", Value::Object(obj));
+        mock.borrow()
+            .register_module("@clevertree/markdown", markdown_host::markdown_module());
+        mock.borrow()
+            .register_module("@clevertree/markdown.js", markdown_host::markdown_module());
+    }
+    let host: HostHandle = mock;
+
+    let src = r#"
+import React from 'react'
+import { MarkdownRenderer } from '@clevertree/markdown'
+
+function Stub(props) {
+  return <nav className="pt-autoindex" data-sort={props.sort}>INDEX</nav>
+}
+
+export default function App() {
+  const md = "Hello\n\n<AutoIndex sort=\"name-asc\" />\n"
+  return (
+    <MarkdownRenderer
+      content={md}
+      overrides={{ AutoIndex: Stub }}
+    />
+  )
+}
+"#;
+    let result = run_hook_persistent(src, host).expect("hook");
+    let vn = value_to_vnode_with_handlers(&result, &mut |_| 0);
+    let text = vn.text_content();
+    assert!(
+        text.contains("INDEX"),
+        "Function override must render; text={text:?} vnode={vn:?}"
+    );
+    assert!(
+        !text.contains("AutoIndex"),
+        "raw AutoIndex must not leak; text={text:?}"
+    );
+}
