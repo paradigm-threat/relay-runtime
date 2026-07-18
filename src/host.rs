@@ -31,7 +31,8 @@ pub fn host_fetch_object(
     Value::Object(m)
 }
 
-/// Serialize optional `fetch` options (`{ method: "GET" }`) for host bridges (JS / JNI).
+/// Serialize optional `fetch` options for host bridges (JS / JNI).
+/// Includes `method` and optional string `body` (needed for QUERY / POST).
 pub fn fetch_options_json(options: Option<&Value>) -> String {
     let method = options
         .and_then(|o| match o {
@@ -43,7 +44,21 @@ pub fn fetch_options_json(options: Option<&Value>) -> String {
             _ => None,
         })
         .unwrap_or_else(|| "GET".to_string());
-    serde_json::json!({ "method": method }).to_string()
+    let body = options
+        .and_then(|o| match o {
+            Value::Object(map) => map.get("body"),
+            _ => None,
+        })
+        .and_then(|v| match v {
+            Value::String(s) => Some(s.clone()),
+            _ => None,
+        });
+    let mut obj = serde_json::Map::new();
+    obj.insert("method".to_string(), serde_json::Value::String(method));
+    if let Some(b) = body {
+        obj.insert("body".to_string(), serde_json::Value::String(b));
+    }
+    serde_json::Value::Object(obj).to_string()
 }
 
 /// Host interface for platform bindings.

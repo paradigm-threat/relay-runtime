@@ -216,11 +216,13 @@ export function installRelayHostFetch() {
   globalThis.__relay_host_fetch = (url, initJson) => {
     let method = 'GET';
     let headers = null;
+    let body = null;
     try {
       if (initJson && String(initJson).length) {
         const o = JSON.parse(String(initJson));
         if (o && o.method) method = String(o.method).toUpperCase();
         if (o && o.headers && typeof o.headers === 'object') headers = o.headers;
+        if (o && typeof o.body === 'string') body = o.body;
       }
     } catch {
       /* ignore */
@@ -250,7 +252,14 @@ export function installRelayHostFetch() {
           xhr.setRequestHeader(String(k), String(v));
         }
       }
-      xhr.send(null);
+      if (body != null && method !== 'GET' && method !== 'HEAD') {
+        if (!headers || headers['Content-Type'] == null && headers['content-type'] == null) {
+          xhr.setRequestHeader('Content-Type', 'application/json');
+        }
+        xhr.send(body);
+      } else {
+        xhr.send(null);
+      }
       const ok = xhr.status >= 200 && xhr.status < 300;
       return JSON.stringify({
         ok,

@@ -20,6 +20,21 @@ fn fetch_options_json_post() {
 }
 
 #[test]
+fn fetch_options_json_includes_body() {
+    let mut m = std::collections::HashMap::new();
+    m.insert("method".to_string(), Value::String("QUERY".to_string()));
+    m.insert(
+        "body".to_string(),
+        Value::String(r#"{"collection":"index"}"#.to_string()),
+    );
+    let opts = Value::Object(m);
+    let s = fetch_options_json(Some(&opts));
+    let v: serde_json::Value = serde_json::from_str(&s).unwrap();
+    assert_eq!(v["method"], "QUERY");
+    assert_eq!(v["body"], r#"{"collection":"index"}"#);
+}
+
+#[test]
 fn host_fetch_object_has_stable_keys() {
     let v = host_fetch_object(true, 200.0, "hello", None);
     let Value::Object(o) = v else {
