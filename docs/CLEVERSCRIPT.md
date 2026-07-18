@@ -99,7 +99,7 @@ Use top-level **`import { … } from '@relay/…'`**. The global **`Relay`** is 
 - Elements: `<div>`, `<span>`, etc.
 - Fragments: `<>...</>`
 - Children: `{expr}` expressions
-- Props: `className`, `key`, `data-*`, etc.
+- Props: `className`, `key`, hyphenated attrs (`data-*`, `aria-*`), etc.
 - No JSX spread: `<Foo {...props}` — pass props explicitly
 - **Templating with variables in JSX** — `{'Hello ' + name}` or `{part1}{part2}`; or use template literals for multi-line / markdown (see §1.1).
 

@@ -39,6 +39,23 @@ impl Platform {
     }
 }
 
+/// Build single-theme CSS for a forced appearance (JS theme toggle).
+/// Prefer this over `css_for_web_system` after `setCurrentTheme`.
+pub fn css_for_forced_theme(theme_yaml: &str, theme_name: &str) -> String {
+    let name = theme_name.trim().to_lowercase();
+    if name.is_empty() {
+        return String::new();
+    }
+    let prefers_dark = name == "dark";
+    let state = build_styler_state(theme_yaml, 1.0, 1.0, Some(&name), prefers_dark);
+    let css = state.css_for_web();
+    if css.trim().is_empty() {
+        String::new()
+    } else {
+        css
+    }
+}
+
 /// Resolve className → style (native) or className + stylesheet (web).
 ///
 /// Returns `(resolved VNode, optional CSS for web injection, optional state JSON)`.

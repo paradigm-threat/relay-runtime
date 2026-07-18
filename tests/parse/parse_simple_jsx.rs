@@ -46,3 +46,25 @@ fn test_div_with_classname() {
     }
     panic!("expected JSX element with props");
 }
+
+#[test]
+fn test_hyphenated_jsx_attrs() {
+    let source = r#"<div data-theme="dark" aria-label="Home" data-relay-ssr={1} />"#;
+    let program = parse(source).expect("hyphenated attrs should parse");
+    let Statement::Expr { expression } = &program.body[0] else {
+        panic!("expected expr");
+    };
+    let Expr::JsxElement(el) = expression.as_ref() else {
+        panic!("expected jsx");
+    };
+    assert_eq!(el.props.len(), 3);
+    let names: Vec<&str> = el
+        .props
+        .iter()
+        .map(|p| match p {
+            JsxProp::Attribute { name, .. } => name.as_str(),
+            _ => panic!("expected attribute"),
+        })
+        .collect();
+    assert_eq!(names, ["data-theme", "aria-label", "data-relay-ssr"]);
+}

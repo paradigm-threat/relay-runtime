@@ -90,3 +90,7 @@ export function getThemes(): string[];
  * Set current theme and update styles. Use with theme toggle buttons (data-theme="...").
  */
 export function setCurrentTheme(name: string): void;
+
+/** Mark embed client live after hydrate/CSR (CleverScript isClientLive). */
+export function setClientLive?(live: boolean): void;
+

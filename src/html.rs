@@ -186,6 +186,8 @@ fn prop_key_to_attr(key: &str) -> String {
         "rowSpan" => "rowspan".to_string(),
         "maxLength" => "maxlength".to_string(),
         "relayControlled" => "data-relay-controlled".to_string(),
+        "dataTheme" => "data-theme".to_string(),
+        "relayAction" => "data-relay-action".to_string(),
         other => {
             // Skip internal / non-DOM props
             if other.starts_with("data-") || other.starts_with("aria-") {
@@ -376,6 +378,28 @@ pub fn escape_json_for_html_script(json: &str) -> String {
 mod tests {
     use super::*;
     use std::collections::HashMap;
+
+    #[test]
+    fn serializes_hyphenated_data_and_aria_attrs() {
+        let mut props = HashMap::new();
+        props.insert(
+            "data-theme".to_string(),
+            PropValue::String("dark".to_string()),
+        );
+        props.insert(
+            "aria-label".to_string(),
+            PropValue::String("Home".to_string()),
+        );
+        let vnode = VNode::Element {
+            tag: "div".to_string(),
+            props,
+            children: vec![],
+            key: None,
+        };
+        let html = vnode_to_html(&vnode, &HtmlRenderOptions::default());
+        assert!(html.contains(r#"data-theme="dark""#), "{html}");
+        assert!(html.contains(r#"aria-label="Home""#), "{html}");
+    }
 
     #[test]
     fn serializes_element_with_style_and_text() {

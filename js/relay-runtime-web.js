@@ -10,6 +10,9 @@ import init, {
   push_message_from_host,
   invoke_handler,
   consume_render_requested,
+  set_client_live,
+  is_client_live,
+  get_current_theme_name,
 } from '../wasm/relay_runtime_pkg/relay_runtime.js';
 
 let _styleId = 'relay-ssr-theme';
@@ -30,12 +33,31 @@ function ensureStyleElement(id) {
 function applyInjectedCss() {
   try {
     const css = typeof get_injected_css === 'function' ? get_injected_css() : '';
-    if (!css || !String(css).trim()) return;
-    const styleEl = ensureStyleElement(_styleId);
-    if (styleEl) styleEl.textContent = String(css);
+    if (css && String(css).trim()) {
+      const styleEl = ensureStyleElement(_styleId);
+      if (styleEl) styleEl.textContent = String(css);
+    }
   } catch (_) {
     /* optional */
   }
+  syncHtmlThemeClass();
+}
+
+/** Mirror CleverScript/WASM theme name onto <html class="light|dark"> for system dual CSS. */
+function syncHtmlThemeClass() {
+  if (typeof document === 'undefined') return;
+  let name = '';
+  try {
+    if (typeof get_current_theme_name === 'function') {
+      name = String(get_current_theme_name() || '').trim();
+    }
+  } catch (_) {
+    return;
+  }
+  if (name !== 'light' && name !== 'dark') return;
+  const root = document.documentElement;
+  root.classList.remove('light', 'dark');
+  root.classList.add(name);
 }
 
 const unitlessStyleProperties = new Set([
@@ -857,9 +879,16 @@ export async function renderHook(container, options = {}) {
   let effectivePath = hookPath || 'hooks/app.jsx';
   let hooksManifest = { hooks: [{ path: effectivePath, name: 'Default' }] };
   let hydratedOnce = false;
+  let livePromoted = false;
   let themeYamlText = typeof themeYaml === 'string' ? themeYaml : '';
   const branchNorm = typeof branch === 'string' ? branch.trim() : '';
   const initialPathNorm = typeof initialPath === 'string' ? initialPath.trim() : '';
+
+  try {
+    if (typeof set_client_live === 'function') set_client_live(false);
+  } catch (_) {
+    /* optional until wasm rebuild */
+  }
 
   if (host) {
     const base = host.trim().replace(/\/+$/, '');
@@ -1007,19 +1036,44 @@ export async function renderHook(container, options = {}) {
         if (!consume_render_requested()) break;
       }
       applyInjectedCss();
-      const vnode = JSON.parse(vnodeJson);
+      let vnode = JSON.parse(vnodeJson);
       const tryHydrate = hydrate && !hydratedOnce && container.dataset?.relaySsr === '1';
       if (tryHydrate) {
         const ok = hydrateVnode(vnode, container, invoke_handler, doRender);
         if (ok) {
           hydratedOnce = true;
           container.dataset.relayHydrated = '1';
+          // Promote to live and re-render so isClientLive() enables controls.
+          try {
+            if (typeof set_client_live === 'function') set_client_live(true);
+          } catch (_) { /* optional */ }
+          livePromoted = true;
+          doRender();
           return;
         }
         console.warn('[relay-runtime] SSR hydrate mismatch; falling back to client render');
       }
       container.innerHTML = '';
       delete container.dataset.relaySsr;
+      if (!livePromoted) {
+        try {
+          if (typeof set_client_live === 'function') set_client_live(true);
+        } catch (_) { /* optional */ }
+        livePromoted = true;
+        // Re-run with isClientLive() true so interactive controls enable.
+        for (let pass = 0; pass < 16; pass++) {
+          vnodeJson = run_hook_with_host(
+            source,
+            JSON.stringify(moduleMap),
+            themeYamlText || '',
+            JSON.stringify(hooksManifest),
+            effectivePath
+          );
+          if (!consume_render_requested()) break;
+        }
+        applyInjectedCss();
+        vnode = JSON.parse(vnodeJson);
+      }
       const el = vnodeToDom(vnode, invoke_handler, doRender);
       if (el) container.appendChild(el);
     } catch (e) {
@@ -1032,6 +1086,10 @@ export async function renderHook(container, options = {}) {
       throw e;
     }
   };
+
+  installEmbedActionDelegation(container, () => {
+    doRender();
+  });
   doRender();
 }
 
@@ -1267,11 +1325,59 @@ export function getThemes() {
 }
 
 /**
- * Set current theme and update styles. Use with theme toggle buttons (data-theme="...").
- * @param {string} name - Theme name (e.g. 'light', 'dark', 'default')
+ * Set current theme and update styles. Use with theme toggle buttons (`data-theme="…"`)
+ * or CleverScript `setCurrentTheme` from `@clevertree/style-internal`.
+ * @param {string} name - Theme name (e.g. 'light', 'dark')
  */
 export function setCurrentTheme(name) {
-  const css = set_theme_and_render(name);
-  const styleEl = ensureStyleElement(_styleId);
-  if (styleEl) styleEl.textContent = css;
+  const n = String(name || '').trim();
+  if (typeof document !== 'undefined') {
+    const root = document.documentElement;
+    root.classList.remove('light', 'dark');
+    if (n === 'light' || n === 'dark') {
+      root.classList.add(n);
+    }
+  }
+  let css = '';
+  try {
+    css = typeof set_theme_and_render === 'function' ? set_theme_and_render(n) : '';
+  } catch (_) {
+    /* optional */
+  }
+  if (!css || !String(css).trim()) {
+    try {
+      css = typeof get_injected_css === 'function' ? get_injected_css() : '';
+    } catch (_) {
+      css = '';
+    }
+  }
+  if (css && String(css).trim()) {
+    const styleEl = ensureStyleElement(_styleId);
+    if (styleEl) styleEl.textContent = String(css);
+  }
+}
+
+/** Install click delegation for `data-theme` and `data-relay-action` on a mount root. */
+function installEmbedActionDelegation(root, onThemeChange) {
+  if (!root || root.dataset.relayActionsBound === '1') return;
+  root.dataset.relayActionsBound = '1';
+  root.addEventListener('click', (e) => {
+    const actionEl = e.target?.closest?.('[data-relay-action]');
+    if (actionEl && !actionEl.disabled) {
+      const action = actionEl.getAttribute('data-relay-action');
+      if (action === 'print' && typeof window !== 'undefined' && typeof window.print === 'function') {
+        e.preventDefault();
+        window.print();
+        return;
+      }
+    }
+    const themeEl = e.target?.closest?.('[data-theme]');
+    if (themeEl && !themeEl.disabled) {
+      const theme = themeEl.getAttribute('data-theme');
+      if (theme) {
+        setCurrentTheme(theme);
+        if (typeof onThemeChange === 'function') onThemeChange(theme);
+      }
+    }
+  });
 }

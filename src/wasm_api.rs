@@ -262,8 +262,12 @@ pub use themed_styler::{
 };
 
 /// Return CSS injected by the hook via injectStyles(). Call after run_hook_with_host.
+/// Prefers a forced theme stylesheet from `setCurrentTheme` when present.
 #[wasm_bindgen]
 pub fn get_injected_css() -> String {
+    if let Some(forced) = crate::session_theme::peek_forced_theme_css() {
+        return forced;
+    }
     INJECTED_CSS.with(|c| c.borrow().clone())
 }
 
@@ -351,16 +355,50 @@ pub fn consume_render_requested() -> bool {
     run_state::consume_render_requested()
 }
 
-/// Set current theme and update LAST_STATE. Returns empty (no CSS; host must re-run hook for new styles).
+/// Set current theme, update LAST_STATE, and return single-theme CSS for immediate apply.
 #[wasm_bindgen]
 pub fn set_theme_and_render(theme_name: &str) -> String {
+    let name = theme_name.trim();
+    if name.is_empty() {
+        return String::new();
+    }
+    let yaml = crate::session_theme::get_session_theme_yaml();
+    let patched = crate::session_theme::patch_current_theme_yaml(&yaml, name);
+    if crate::session_theme::looks_like_theme_yaml(&patched) {
+        crate::session_theme::set_session_theme_yaml(&patched);
+    }
+    let css = crate::style_resolve::css_for_forced_theme(&patched, name);
+    if !css.trim().is_empty() {
+        crate::session_theme::set_forced_theme_css(&css);
+        INJECTED_CSS.with(|c| *c.borrow_mut() = css.clone());
+    }
+    crate::session_theme::set_current_theme_name(name);
     LAST_STATE.with(|c| {
         let state = c.borrow().clone();
         if !state.is_empty() {
-            *c.borrow_mut() = set_theme_json(&state, theme_name);
+            *c.borrow_mut() = set_theme_json(&state, name);
         }
     });
-    String::new()
+    crate::run_state::set_render_requested();
+    css
+}
+
+/// Mark the embed client as live (post-hydrate / CSR). CleverScript `isClientLive()`.
+#[wasm_bindgen]
+pub fn set_client_live(live: bool) {
+    crate::session_theme::set_client_live(live);
+}
+
+/// Whether interactive controls should enable (`isClientLive()` in CleverScript).
+#[wasm_bindgen]
+pub fn is_client_live() -> bool {
+    crate::session_theme::is_client_live()
+}
+
+/// Last theme name passed to `setCurrentTheme` / `set_theme_and_render`.
+#[wasm_bindgen]
+pub fn get_current_theme_name() -> String {
+    crate::session_theme::get_current_theme_name()
 }
 
 fn inject_styles_native(args: &[Value]) -> Result<Value, String> {

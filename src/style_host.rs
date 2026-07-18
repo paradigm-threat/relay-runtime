@@ -5,7 +5,11 @@
 
 use crate::host::{Host, HostHandle, ModuleMapHost};
 use crate::run_state::set_render_requested;
-use crate::session_theme::{looks_like_theme_yaml, set_session_theme_yaml};
+use crate::session_theme::{
+    get_session_theme_yaml, is_client_live, looks_like_theme_yaml, patch_current_theme_yaml,
+    set_forced_theme_css, set_session_theme_yaml,
+};
+use crate::style_resolve::css_for_forced_theme;
 use crate::value::Value;
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -51,6 +55,49 @@ pub fn style_internal_module() -> Value {
                 })
                 .unwrap_or("");
             Ok(Value::Bool(looks_like_theme_yaml(text)))
+        }),
+    );
+    m.insert(
+        "isClientLive".to_string(),
+        Value::Native(|_args: &[Value]| Ok(Value::Bool(is_client_live()))),
+    );
+    m.insert(
+        "getCurrentTheme".to_string(),
+        Value::Native(|_args: &[Value]| {
+            Ok(Value::String(crate::session_theme::get_current_theme_name()))
+        }),
+    );
+    m.insert(
+        "setCurrentTheme".to_string(),
+        Value::Native(|args: &[Value]| {
+            let name = args
+                .first()
+                .and_then(|v| match v {
+                    Value::String(s) => Some(s.as_str()),
+                    _ => None,
+                })
+                .ok_or("setCurrentTheme requires theme name string")?
+                .trim()
+                .to_string();
+            if name.is_empty() {
+                return Err("setCurrentTheme: empty theme name".to_string());
+            }
+            let yaml = get_session_theme_yaml();
+            let patched = patch_current_theme_yaml(&yaml, &name);
+            if looks_like_theme_yaml(&patched) {
+                set_session_theme_yaml(&patched);
+            } else if !yaml.is_empty() {
+                // Keep prior session; still force CSS from name when possible.
+            } else {
+                set_session_theme_yaml(&format!("current_theme: {name}\n"));
+            }
+            let css = css_for_forced_theme(&get_session_theme_yaml(), &name);
+            if !css.trim().is_empty() {
+                set_forced_theme_css(&css);
+            }
+            crate::session_theme::set_current_theme_name(&name);
+            set_render_requested();
+            Ok(Value::String(css))
         }),
     );
     Value::Object(m)
@@ -104,6 +151,9 @@ mod tests {
         };
         assert!(obj.contains_key("setSessionThemeYaml"));
         assert!(obj.contains_key("looksLikeThemeYaml"));
+        assert!(obj.contains_key("setCurrentTheme"));
+        assert!(obj.contains_key("getCurrentTheme"));
+        assert!(obj.contains_key("isClientLive"));
     }
 
     #[test]

@@ -25,6 +25,17 @@
 - **themed-styler**: WASM + Android (JNI) support; dependency of relay-runtime
 - **run_state**: persistent state, `consume_render_requested()`, `invoke_handler(id)`
 
+**UI authorship:** CleverScript hooks describe Relay UI without targeting a platform. Hosts (web
+glue, Android, desktop) apply VNodes and natives. Hooks must not use `document`/`window` (or
+equivalent) directly; page scripts must not read WASM/runtime private state — only the published
+host API ([`RELAY_EMBED_CLIENT_GET_INTERCEPT.md`](../../relay-gateway/docs/RELAY_EMBED_CLIENT_GET_INTERCEPT.md)
+§ Host boundary).
+
+**Parked web / embed:** content sites (e.g. clevertree.net) hydrate via **WASM only** — no npm React on
+`/assets/embed.js`. If the React npm runtime is ever required for a host feature, treat it as a
+**native component** (CleverScript configures; host owns the React tree), same pattern as
+Android/desktop widgets — **deferred**; see gateway embed doc § Dependency policy.
+
 ---
 
 ## 2. Styling and Rendering Strategy
@@ -436,6 +447,7 @@ relay-runtime/
 | 8 | Bundled fonts: common set (Inter, Roboto, system fallbacks) | 0.5 day |
 | 9 | Platform parity tests (snapshot, instrumented) | 1 day |
 | 10 | Extend Host for native components (audio, video, canvas) — future | 2+ days |
+| 11 | Optional: npm React as a **native component** (not embed/`parked` dep) — deferred | TBD |
 
 ---
 

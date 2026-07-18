@@ -1327,9 +1327,8 @@ fn parse_jsx_element_tail(
                 expect_token(stream, Token::RAngle)?;
                 return Ok((props, true));
             }
-            Token::Ident(ref name) => {
-                let name = name.clone();
-                stream.next();
+            Token::Ident(_) => {
+                let name = parse_jsx_attr_name(stream)?;
                 if eat_token(stream, Token::Eq) {
                     let value = parse_jsx_attr_value(stream)?;
                     props.push(JsxProp::Attribute { name, value });
@@ -1354,6 +1353,18 @@ fn parse_jsx_element_tail(
 
     expect_token(stream, Token::RAngle)?;
     Ok((props, false))
+}
+
+/// JSX attribute names may be hyphenated (`data-theme`, `aria-label`, `data-relay-ssr`).
+/// Outside JSX, `-` remains subtraction — this join is attribute-position only.
+fn parse_jsx_attr_name(stream: &mut TokenStream) -> Result<String, RuntimeError> {
+    let mut name = expect_ident(stream)?;
+    while eat_token(stream, Token::Sub) {
+        let part = expect_ident(stream)?;
+        name.push('-');
+        name.push_str(&part);
+    }
+    Ok(name)
 }
 
 fn parse_jsx_attr_value(stream: &mut TokenStream) -> Result<JsxAttrValue, RuntimeError> {
