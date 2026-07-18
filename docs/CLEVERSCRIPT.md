@@ -232,8 +232,9 @@ When writing CleverScript for parked tips (SSR + hydrate):
 3. **Exports** — `export default` / `export function` only (no `export const`).
 4. **Lone quote literals are OK in the runtime** — `'"'` and `"'"` round-trip; prefer them over ad-hoc concat when you need a quote char. Prefer longer safe forms (`"x'y".charAt(1)`) only if a host/tooling path mangles lone quotes.
 5. **Prefer literal `replaceAll` over host+path concat** for URL rewriting — concat has historically mangled tip paths under SSR.
-6. **Markdown custom tags** — pass `overrides={{ AutoIndex: Comp, … }}` to `MarkdownRenderer` so md2ast allows the tag and CleverScript renders the component. Without overrides, `<AutoIndex />` leaks as text.
+6. **Markdown custom tags** — pass `overrides={{ AutoIndex: Comp, … }}` to `MarkdownRenderer` so md2ast allows the tag and CleverScript renders the component. Without overrides, `<AutoIndex />` leaks as text. Nested `function` decls inside the component body are supported; module-level components are fine too.
 7. **Do not preprocess large markdown with fragile replaces** to fake MDX — use overrides instead.
+8. **JSX attribute expressions must evaluate** — failed `{expr}` props are errors (not silently dropped), so a bad `overrides={…}` surfaces instead of rendering without custom tags.
 
 ---
 

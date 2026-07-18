@@ -785,6 +785,15 @@ fn check_function_scope(
     for p in params {
         scope.last_mut().unwrap().insert(p.name.clone());
     }
+    // Hoist nested `function name() {}` decls (JS semantics) before body refs.
+    for s in body {
+        if let Statement::FunctionDecl {
+            id: Some(name), ..
+        } = s
+        {
+            scope.last_mut().unwrap().insert(name.clone());
+        }
+    }
     for s in body {
         check_stmt_refs(s, scope)?;
     }
@@ -874,6 +883,10 @@ fn check_stmt_refs(stmt: &Statement, scope: &mut Vec<HashSet<String>>) -> Result
             scope.pop();
         }
         Statement::Break | Statement::Continue => {}
+        Statement::FunctionDecl { params, body, .. } => {
+            // Name is hoisted by `check_function_scope` / parent block; analyze nested body.
+            check_function_scope(params, body, scope)?;
+        }
         Statement::Try {
             block,
             handler,

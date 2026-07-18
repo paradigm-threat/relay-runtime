@@ -236,3 +236,61 @@ export default function App() {
         "raw AutoIndex must not leak; text={text:?}"
     );
 }
+
+#[test]
+fn article_view_style_nested_functions_as_overrides() {
+    use relay_runtime::host::{HostHandle, MockHost};
+    use relay_runtime::markdown_host;
+    use relay_runtime::run_state::{clear_run_state, run_hook_persistent};
+    use relay_runtime::value::Value;
+    use relay_runtime::vdom::value_to_vnode_with_handlers;
+    use std::collections::HashMap;
+
+    clear_run_state();
+    let mock = MockHost::new();
+    {
+        let mut obj = HashMap::new();
+        obj.insert("useState".to_string(), Value::ReactHook("useState".to_string()));
+        mock.borrow().register_module("react", Value::Object(obj.clone()));
+        mock.borrow().register_module("react.js", Value::Object(obj));
+        mock.borrow().register_module("@clevertree/markdown", markdown_host::markdown_module());
+        mock.borrow().register_module("@clevertree/markdown.js", markdown_host::markdown_module());
+    }
+    let host: HostHandle = mock;
+
+    // Mirrors ArticleView: nested functions + multiline overrides object in JSX.
+    let src = r#"
+import React from 'react'
+import { MarkdownRenderer } from '@clevertree/markdown'
+
+export default function ArticleView() {
+  function renderAutoIndex(p) {
+    let sortAttr = 'name-asc'
+    try {
+      if (p && typeof p.sort === 'string') sortAttr = p.sort
+    } catch (e) {}
+    return <nav className="pt-autoindex" data-sort={sortAttr}>INDEX</nav>
+  }
+  function renderEmptyMdStub() {
+    return <span className="pt-muted" />
+  }
+  const body = "Before\n\n<AutoIndex sort=\"name-asc\" />\n\n<ChangeLog />\nAfter"
+  return (
+    <MarkdownRenderer
+      content={body}
+      overrides={{
+        AutoIndex: renderAutoIndex,
+        ChangeLog: renderEmptyMdStub,
+        ChatRoom: renderEmptyMdStub,
+      }}
+    />
+  )
+}
+"#;
+    let result = run_hook_persistent(src, host).expect("hook");
+    let vn = value_to_vnode_with_handlers(&result, &mut |_| 0);
+    let text = vn.text_content();
+    assert!(text.contains("INDEX"), "got {text:?} {vn:?}");
+    assert!(!text.contains("AutoIndex"), "leak AutoIndex in {text:?}");
+    assert!(!text.contains("ChangeLog"), "leak ChangeLog in {text:?}");
+}

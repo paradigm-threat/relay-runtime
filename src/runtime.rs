@@ -666,21 +666,18 @@ impl Runtime {
     }
 
     fn eval_jsx_element(&mut self, el: &JsxElement) -> Result<Value, RuntimeError> {
-        let props: HashMap<String, Value> = el
-            .props
-            .iter()
-            .filter_map(|p| {
-                if let JsxProp::Attribute { name, value } = p {
-                    let v = match value {
-                        JsxAttrValue::String(s) => Value::String(s.clone()),
-                        JsxAttrValue::Expr(e) => self.eval_expr(e).ok()?,
-                    };
-                    Some((name.clone(), v))
-                } else {
-                    None
-                }
-            })
-            .collect();
+        // Propagate attribute expression errors (do not silently drop props — that
+        // previously made MarkdownRenderer `overrides` vanish when nested fns were undefined).
+        let mut props: HashMap<String, Value> = HashMap::new();
+        for p in &el.props {
+            if let JsxProp::Attribute { name, value } = p {
+                let v = match value {
+                    JsxAttrValue::String(s) => Value::String(s.clone()),
+                    JsxAttrValue::Expr(e) => self.eval_expr(e)?,
+                };
+                props.insert(name.clone(), v);
+            }
+        }
         let mut children: Vec<Value> = Vec::new();
         for c in &el.children {
             match c {
@@ -1384,7 +1381,29 @@ impl Runtime {
                     }
                 }
             }
-            _ => {}
+            Statement::FunctionDecl {
+                id: Some(name),
+                params,
+                body,
+                r#async,
+            } => {
+                // Nested `function name() {}` inside a component/function body (not only
+                // top-level). Bind into the current env so JSX props like
+                // `overrides={{ AutoIndex: renderAutoIndex }}` resolve.
+                let f = Value::Function {
+                    params: params.clone(),
+                    body: body.clone(),
+                    env: self.env.clone(),
+                    is_async: *r#async,
+                    component_hooks: None,
+                    component_module_path: None,
+                };
+                self.env.borrow_mut().set(name, f);
+            }
+            Statement::FunctionDecl { id: None, .. }
+            | Statement::ImportDecl { .. }
+            | Statement::ExportDefault { .. }
+            | Statement::ExportNamed { .. } => {}
         }
         Ok(EvalControl::Next)
     }
