@@ -1,7 +1,9 @@
 //! Virtual `@clevertree/markdown` host module: **`MarkdownRenderer`** via **md2ast** → CleverScript VDOM Values.
 //!
 //! Default anchor behavior follows the browser (`href` only). Repos opt into SPA routing by passing
-//! **`anchorProps`** (shallow merge onto each `<a>`) and/or **`anchorOnClick`** (sets `onClick` + **`relayControlled`** per link so hosts can `preventDefault` and pass `href` into the callback).
+//! **`anchorProps`** / **`anchorOnClick`**. Custom markdown tags (e.g. `<AutoIndex />`) are enabled via
+//! **`overrides`**: an object of tag name → CleverScript/native component; override keys are merged into
+//! md2ast `allowed_tags`.
 
 use crate::value::{NativeFnClosure, Value};
 use md2ast::{parse as md2ast_parse, Node, TranspileOptions};
@@ -43,42 +45,67 @@ pub fn markdown_module() -> Value {
     Value::Object(m)
 }
 
-/// Renders markdown to a hook **Value** (`element`/`text` trees or an `Array` of roots) using the same
-/// md2ast options as `MarkdownRenderer` with default math-friendly HTML allowlist.
+/// Renders markdown to a hook **Value** using the default HTML allowlist (no custom overrides).
 pub fn render_markdown_to_value(
     markdown: &str,
     anchor_props: Option<&HashMap<String, Value>>,
     anchor_on_click: Option<&Value>,
 ) -> Value {
+    render_markdown_to_value_with_overrides(markdown, anchor_props, anchor_on_click, None)
+}
+
+/// Like [`render_markdown_to_value`], but `overrides` keys are allowed as HTML/component tags and
+/// callable override values replace those elements in the VDOM.
+pub fn render_markdown_to_value_with_overrides(
+    markdown: &str,
+    anchor_props: Option<&HashMap<String, Value>>,
+    anchor_on_click: Option<&Value>,
+    overrides: Option<&HashMap<String, Value>>,
+) -> Value {
+    let mut allowed = default_allowed_html_tags();
+    if let Some(ov) = overrides {
+        for k in ov.keys() {
+            if !allowed.iter().any(|t| t == k) {
+                allowed.push(k.clone());
+            }
+        }
+    }
     let options = TranspileOptions {
-        allowed_tags: default_allowed_html_tags(),
+        allowed_tags: allowed,
     };
     let nodes = md2ast_parse(markdown, &options);
-    render_nodes_to_value(&nodes, anchor_props, anchor_on_click)
+    render_nodes_to_value(&nodes, anchor_props, anchor_on_click, overrides)
 }
 
 fn element_value(tag: &str, props: HashMap<String, Value>, children: Vec<Value>) -> Value {
     let mut obj = HashMap::new();
     obj.insert("type".to_string(), Value::String("element".to_string()));
-    obj.insert(
-        "tag".to_string(),
-        Value::String(tag.to_string()),
-    );
-    obj.insert(
-        "props".to_string(),
-        Value::Object(props),
-    );
-    obj.insert(
-        "children".to_string(),
-        Value::Array(children),
-    );
+    obj.insert("tag".to_string(), Value::String(tag.to_string()));
+    obj.insert("props".to_string(), Value::Object(props));
+    obj.insert("children".to_string(), Value::Array(children));
     Value::Object(obj)
+}
+
+fn is_callable(v: &Value) -> bool {
+    matches!(
+        v,
+        Value::Function { .. } | Value::Native(_) | Value::NativeFn(_)
+    )
+}
+
+fn call_override_component(comp: &Value, props: Value) -> Result<Value, String> {
+    match comp {
+        Value::Native(f) => f(&[props]),
+        Value::NativeFn(f) => f.0(&[props]),
+        other => crate::run_state::invoke_handler_value(other, &[props]).map_err(|e| e.to_string()),
+    }
 }
 
 fn md_node_to_value(
     node: &Node,
     anchor_props: Option<&HashMap<String, Value>>,
     anchor_on_click: Option<&Value>,
+    overrides: Option<&HashMap<String, Value>>,
 ) -> Value {
     match node {
         Node::Text { content } => Value::String(content.clone()),
@@ -121,10 +148,26 @@ fn md_node_to_value(
                     props_vm.insert("relayControlled".to_string(), Value::Bool(true));
                 }
             }
-            let kid_vals = children
+            let kid_vals: Vec<Value> = children
                 .iter()
-                .map(|c| md_node_to_value(c, anchor_props, anchor_on_click))
-                .collect::<Vec<_>>();
+                .map(|c| md_node_to_value(c, anchor_props, anchor_on_click, overrides))
+                .collect();
+
+            if let Some(ov) = overrides {
+                if let Some(comp) = ov.get(tag) {
+                    if is_callable(comp) {
+                        let mut override_props = props_vm.clone();
+                        override_props
+                            .insert("children".to_string(), Value::Array(kid_vals.clone()));
+                        if let Ok(v) =
+                            call_override_component(comp, Value::Object(override_props))
+                        {
+                            return v;
+                        }
+                    }
+                }
+            }
+
             element_value(tag, props_vm, kid_vals)
         }
     }
@@ -134,10 +177,11 @@ fn render_nodes_to_value(
     nodes: &[Node],
     anchor_props: Option<&HashMap<String, Value>>,
     anchor_on_click: Option<&Value>,
+    overrides: Option<&HashMap<String, Value>>,
 ) -> Value {
     let vals: Vec<Value> = nodes
         .iter()
-        .map(|n| md_node_to_value(n, anchor_props, anchor_on_click))
+        .map(|n| md_node_to_value(n, anchor_props, anchor_on_click, overrides))
         .collect();
     if vals.len() == 1 {
         vals.into_iter().next().unwrap_or(Value::Null)
@@ -179,10 +223,12 @@ fn markdown_renderer_native(args: &[Value]) -> Result<Value, String> {
         .to_string();
     let anchor_props_full = object_props_only(props_map, "anchorProps");
     let anchor_on_click = props_map.get("anchorOnClick");
-    Ok(render_markdown_to_value(
+    let overrides = object_props_only(props_map, "overrides");
+    Ok(render_markdown_to_value_with_overrides(
         &content,
         anchor_props_full,
         anchor_on_click,
+        overrides,
     ))
 }
 
@@ -201,6 +247,18 @@ mod tests {
             }
             for c in children {
                 walk_vnode_each(c, f);
+            }
+        }
+    }
+
+    fn walk_all_elements<F>(v: &VNode, f: &mut F)
+    where
+        F: FnMut(&VNode),
+    {
+        if let VNode::Element { children, .. } = v {
+            f(v);
+            for c in children {
+                walk_all_elements(c, f);
             }
         }
     }
@@ -304,5 +362,75 @@ mod tests {
             }
         });
         assert!(found, "expected merged className on anchor");
+    }
+
+    #[test]
+    fn overrides_render_custom_pascal_case_tag() {
+        let mut overrides = HashMap::new();
+        overrides.insert(
+            "AutoIndex".to_string(),
+            Value::Native(|args: &[Value]| {
+                let props = args.first().cloned().unwrap_or(Value::Null);
+                let sort = match &props {
+                    Value::Object(m) => m
+                        .get("sort")
+                        .and_then(|v| match v {
+                            Value::String(s) => Some(s.as_str()),
+                            _ => None,
+                        })
+                        .unwrap_or(""),
+                    _ => "",
+                };
+                Ok(element_value(
+                    "nav",
+                    {
+                        let mut p = HashMap::new();
+                        p.insert(
+                            "data-autoindex".to_string(),
+                            Value::String(sort.to_string()),
+                        );
+                        p
+                    },
+                    vec![Value::String("INDEX".to_string())],
+                ))
+            }),
+        );
+        let v = render_markdown_to_value_with_overrides(
+            "Hello\n\n<AutoIndex sort=\"name-asc\" />\n",
+            None,
+            None,
+            Some(&overrides),
+        );
+        let vn = value_to_vnode_with_handlers(&v, &mut |_| 0);
+        let mut found = false;
+        walk_all_elements(&vn, &mut |el| {
+            if let VNode::Element { tag, props, .. } = el {
+                if tag == "nav" {
+                    if let Some(PropValue::String(s)) = props.get("data-autoindex") {
+                        if s == "name-asc" {
+                            found = true;
+                        }
+                    }
+                }
+            }
+        });
+        assert!(found, "expected AutoIndex override to render <nav data-autoindex=name-asc>; got {:?}", vn);
+        let text = vn.text_content();
+        assert!(text.contains("INDEX"), "override children text: {text}");
+        assert!(
+            !text.contains("AutoIndex"),
+            "raw AutoIndex tag must not leak as text"
+        );
+    }
+
+    #[test]
+    fn without_overrides_custom_tag_leaks_as_text() {
+        let v = render_markdown_to_value("Hi <AutoIndex />", None, None);
+        let vn = value_to_vnode_with_handlers(&v, &mut |_| 0);
+        let text = vn.text_content();
+        assert!(
+            text.contains("AutoIndex") || text.contains("<AutoIndex"),
+            "disallowed tags become text: {text}"
+        );
     }
 }

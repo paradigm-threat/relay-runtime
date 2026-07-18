@@ -102,6 +102,35 @@ fn eat_token(stream: &mut TokenStream, expected: Token) -> bool {
     }
 }
 
+fn keyword_as_binding_name(kw: &Keyword) -> Option<&'static str> {
+    Some(match kw {
+        Keyword::From => "from",
+        Keyword::As => "as",
+        Keyword::Of => "of",
+        Keyword::Const => "const",
+        Keyword::Let => "let",
+        Keyword::Var => "var",
+        Keyword::Function => "function",
+        Keyword::Return => "return",
+        Keyword::If => "if",
+        Keyword::Else => "else",
+        Keyword::For => "for",
+        Keyword::While => "while",
+        Keyword::Try => "try",
+        Keyword::Catch => "catch",
+        Keyword::Finally => "finally",
+        Keyword::Await => "await",
+        Keyword::Async => "async",
+        Keyword::Export => "export",
+        Keyword::Default => "default",
+        Keyword::Import => "import",
+        Keyword::Switch => "switch",
+        Keyword::Case => "case",
+        Keyword::Break => "break",
+        Keyword::Continue => "continue",
+    })
+}
+
 fn expect_ident(stream: &mut TokenStream) -> Result<String, RuntimeError> {
     match stream.peek() {
         Token::Ident(name) => {
@@ -109,11 +138,34 @@ fn expect_ident(stream: &mut TokenStream) -> Result<String, RuntimeError> {
             stream.next();
             Ok(name)
         }
+        Token::Keyword(kw) => {
+            let word = keyword_as_binding_name(kw).unwrap_or("keyword");
+            Err(stream.parse_error(format!(
+                "`{word}` is a reserved keyword and cannot be used as a binding name (rename the variable; e.g. `from` → `rootPrefix`)"
+            )))
+        }
         _ => Err(stream.parse_error(format!(
             "Expected identifier, got {:?}",
             stream.peek()
         ))),
     }
+}
+
+/// CleverScript requires `{ … }` bodies (no single-statement `while (x) stmt`).
+fn expect_braced_block(
+    stream: &mut TokenStream,
+    after: &str,
+) -> Result<Vec<Statement>, RuntimeError> {
+    if !matches!(stream.peek(), Token::LCurly) {
+        return Err(stream.parse_error(format!(
+            "Expected `{{` to start a block after {after} (CleverScript requires braces; single-statement bodies are not allowed), got {:?}",
+            stream.peek()
+        )));
+    }
+    stream.next();
+    let body = parse_block(stream)?;
+    expect_token(stream, Token::RCurly)?;
+    Ok(body)
 }
 
 fn expect_semicolon_optional(stream: &mut TokenStream) {
@@ -409,7 +461,8 @@ fn is_type_name(s: &str) -> bool {
 
 fn parse_pattern(stream: &mut TokenStream) -> Result<Pattern, RuntimeError> {
     match stream.peek() {
-        Token::Ident(_) => {
+        Token::Ident(_) | Token::Keyword(_) => {
+            // Keywords hit expect_ident's reserved-name diagnostic (e.g. `const from = …`).
             let name = expect_ident(stream)?;
             let type_annotation = if stream.peek() == &Token::Colon {
                 if let Token::Ident(ref type_name) = stream.peek_ahead(1) {
@@ -733,9 +786,7 @@ fn parse_while(stream: &mut TokenStream) -> Result<Statement, RuntimeError> {
     expect_token(stream, Token::LParen)?;
     let test = Box::new(parse_expression(stream)?);
     expect_token(stream, Token::RParen)?;
-    expect_token(stream, Token::LCurly)?;
-    let body = parse_block(stream)?;
-    expect_token(stream, Token::RCurly)?;
+    let body = expect_braced_block(stream, "`while (…)`")?;
     Ok(Statement::While { test, body })
 }
 

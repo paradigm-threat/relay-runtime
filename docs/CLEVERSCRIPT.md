@@ -80,7 +80,7 @@ Use top-level **`import { … } from '@relay/…'`**. The global **`Relay`** is 
 - `export default function …`
 - `export function name(…)` — named export installed in the module env
 - Host provides: theme, styler, relayRuntime (getThemes, postMessage, getPendingMessages), etc.
-- **Client WASM / Android markdown:** `import { MarkdownRenderer } from '@clevertree/markdown'` — virtual module (not npm): named export **`MarkdownRenderer`** renders markdown to VDOM via **md2ast** built into relay-runtime. **`navigate`** is accepted for backward compatibility only; markdown links default to normal **`href`** navigation (same-origin absolute URLs are not intercepted automatically). For SPA-style routing per repo, pass **`anchorProps`** (shallow-merge object onto each parsed `<a>`) and/or **`anchorOnClick`** (`onClick` applied after merge; wins over `anchorProps.onClick`). The implementation avoids document-level delegated capture—only handlers you attach. **`@clevertree/hook-transpiler`** is an alias for the same module. IR and behavior: **`relay-gateway/docs/RELAY_MARKDOWN_IR.md`**.
+- **Client WASM / Android markdown:** `import { MarkdownRenderer } from '@clevertree/markdown'` — virtual module (not npm): named export **`MarkdownRenderer`** renders markdown to VDOM via **md2ast** built into relay-runtime. **`navigate`** is accepted for backward compatibility only; markdown links default to normal **`href`** navigation (same-origin absolute URLs are not intercepted automatically). For SPA-style routing per repo, pass **`anchorProps`** (shallow-merge object onto each parsed `<a>`) and/or **`anchorOnClick`** (`onClick` applied after merge; wins over `anchorProps.onClick`). Custom tags (e.g. `<AutoIndex />`) require **`overrides={{ AutoIndex: Comp }}`** — override keys become md2ast allowed tags and callables replace those elements. The implementation avoids document-level delegated capture—only handlers you attach. **`@clevertree/hook-transpiler`** is an alias for the same module. IR and behavior: **`relay-gateway/docs/RELAY_MARKDOWN_IR.md`**.
 - **Client WASM / Android / desktop video:** `import { VideoPlayer } from '@clevertree/video'` — virtual module: **`VideoPlayer(props)`** returns a native **`relay-video-player`** VNode. Hosts render platform playback (HTML5 `<video>`, ExoPlayer, or desktop external player) with a consistent CleverScript control surface:
   - **Media:** `src` (required), optional `poster`, `subtitles` (array of `{ src, label?, lang?, default? }` — serialized to `subtitlesJson` for hosts; `.srt` converted to WebVTT on web).
   - **Native UI:** `controls` (default `true`), `autoPlay`, `muted`, `loop`, `volume`, `playbackRate`.
@@ -223,6 +223,20 @@ Siblings and parent components continue to render. This improves reliability com
 
 ---
 
+## 5.1 Tip / park hook checklist (hard-won)
+
+When writing CleverScript for parked tips (SSR + hydrate):
+
+1. **Braces always** — `while` / `for` / `try` bodies must use `{ … }`. Single-statement bodies parse-error with a braces hint.
+2. **No reserved bindings** — `from`, `of`, `as`, `import`, etc. cannot be variable names (`const from = …` fails with a reserved-keyword message). Prefer `rootPrefix`, `needle`, …
+3. **Exports** — `export default` / `export function` only (no `export const`).
+4. **Lone quote literals are OK in the runtime** — `'"'` and `"'"` round-trip; prefer them over ad-hoc concat when you need a quote char. Prefer longer safe forms (`"x'y".charAt(1)`) only if a host/tooling path mangles lone quotes.
+5. **Prefer literal `replaceAll` over host+path concat** for URL rewriting — concat has historically mangled tip paths under SSR.
+6. **Markdown custom tags** — pass `overrides={{ AutoIndex: Comp, … }}` to `MarkdownRenderer` so md2ast allows the tag and CleverScript renders the component. Without overrides, `<AutoIndex />` leaks as text.
+7. **Do not preprocess large markdown with fragile replaces** to fake MDX — use overrides instead.
+
+---
+
 ## 6. Summary Table
 
 | Category | Supported | Not Supported |
@@ -237,6 +251,7 @@ Siblings and parent components continue to render. This improves reliability com
 | Arrays | `length`, `[i]`, `concat`/`map`/`filter`/`find`, spread | `push`, `pop`, mutable methods |
 | Modules | `export default`, `export function` | `arguments` |
 | JSX | elements, fragments `<>`, `{expr}` | spread `{...props}` |
+| Markdown | `MarkdownRenderer` + `anchorProps` / `anchorOnClick` / **`overrides`** | full MDX expressions |
 
 ---
 
