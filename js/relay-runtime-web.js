@@ -600,18 +600,21 @@ export function hydrateVnode(v, container, invokeHandler = invoke_handler, onAft
     if (v.Element) {
       const { tag, children } = v.Element;
       if (tag === 'fragment') {
-        return hydrateChildren(children || [], elementChildNodes(container), invokeHandler, onAfterInvoke);
+        return hydrateChildren(children || [], elementChildNodes(container), invokeHandler, onAfterInvoke, '/fragment');
       }
       const kids = elementChildNodes(container);
       if (kids.length === 1) {
-        return hydrateElementNode(v, kids[0], invokeHandler, onAfterInvoke);
+        return hydrateElementNode(v, kids[0], invokeHandler, onAfterInvoke, `/${tag || 'root'}`);
       }
       // Single text-only or empty
       if (kids.length === 0 && (!children || children.length === 0)) return true;
+      console.warn(
+        `[relay-runtime] hydrate root child-count mismatch: vnode children vs dom=${kids.length}`
+      );
       return false;
     }
     if (Array.isArray(v)) {
-      return hydrateChildren(v, elementChildNodes(container), invokeHandler, onAfterInvoke);
+      return hydrateChildren(v, elementChildNodes(container), invokeHandler, onAfterInvoke, '/[]');
     }
     return false;
   } catch (e) {
@@ -620,8 +623,8 @@ export function hydrateVnode(v, container, invokeHandler = invoke_handler, onAft
   }
 }
 
-function hydrateChildren(vnodes, domEls, invokeHandler, onAfterInvoke) {
-  const elements = (vnodes || []).filter((c) => c && c.Element && c.Element.tag !== 'fragment');
+function hydrateChildren(vnodes, domEls, invokeHandler, onAfterInvoke, path) {
+  const basePath = path || '';
   // Expand fragments
   const flat = [];
   for (const c of vnodes || []) {
@@ -637,29 +640,41 @@ function hydrateChildren(vnodes, domEls, invokeHandler, onAfterInvoke) {
   if (flat.length !== domEls.length) {
     // Allow soft mismatch when only text nodes differed in SSR
     if (flat.length === 0 && domEls.length === 0) return true;
+    const vnodeTags = flat.map((v) => (v.Element && v.Element.tag) || '?').join(',');
+    const domTags = domEls.map((el) => el.tagName || '?').join(',');
+    console.warn(
+      `[relay-runtime] hydrate child-count mismatch at ${basePath || '/'}: vnode=${flat.length}[${vnodeTags}] dom=${domEls.length}[${domTags}]`
+    );
     return false;
   }
   for (let i = 0; i < flat.length; i++) {
-    if (!hydrateElementNode(flat[i], domEls[i], invokeHandler, onAfterInvoke)) return false;
+    const tag = (flat[i].Element && flat[i].Element.tag) || i;
+    if (!hydrateElementNode(flat[i], domEls[i], invokeHandler, onAfterInvoke, `${basePath}/${tag}[${i}]`)) {
+      return false;
+    }
   }
   return true;
 }
 
-function hydrateElementNode(v, el, invokeHandler, onAfterInvoke) {
+function hydrateElementNode(v, el, invokeHandler, onAfterInvoke, path) {
   if (!v || !v.Element || !el) return false;
   const { tag, props, children } = v.Element;
+  const here = path || tag || '?';
   if (tag === 'fragment') {
-    return hydrateChildren(children || [], elementChildNodes(el), invokeHandler, onAfterInvoke);
+    return hydrateChildren(children || [], elementChildNodes(el), invokeHandler, onAfterInvoke, here);
   }
   const expect = expectedDomTag(tag);
-  if (expect && el.tagName !== expect) {
+  if (expect && String(el.tagName || '').toUpperCase() !== expect) {
     // Soft: video/hook stubs use div
-    if (!(expect === 'DIV' && el.tagName === 'DIV')) {
+    if (!(expect === 'DIV' && String(el.tagName || '').toUpperCase() === 'DIV')) {
+      console.warn(
+        `[relay-runtime] hydrate tag mismatch at ${here}: vnode=${expect} dom=${el.tagName}`
+      );
       return false;
     }
   }
   attachHandlersFromProps(el, tag, props || {}, invokeHandler, onAfterInvoke);
-  return hydrateChildren(children || [], elementChildNodes(el), invokeHandler, onAfterInvoke);
+  return hydrateChildren(children || [], elementChildNodes(el), invokeHandler, onAfterInvoke, here);
 }
 
 /**

@@ -168,6 +168,10 @@ pub enum Expr {
         object: Box<Expr>,
         property: Box<Expr>,
         optional: bool,
+        /// `true` for `obj[expr]` / `obj?.[expr]`; `false` for `obj.prop` / `obj?.prop`.
+        /// Bracket access must evaluate `property` (so `props[key]` uses the variable `key`).
+        #[serde(default)]
+        computed: bool,
     },
     ArrowFunction {
         params: Vec<Param>,

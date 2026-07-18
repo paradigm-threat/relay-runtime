@@ -754,6 +754,7 @@ fn react_module() -> Value {
                         name: "children".to_string(),
                     }),
                     optional: false,
+                    computed: false,
                 })),
             }],
             env: crate::value::Env::new(),

@@ -249,6 +249,7 @@ impl Runtime {
                     object,
                     property,
                     optional: _,
+                    computed: _,
                 } = callee.as_ref()
                 {
                     if let (Expr::Identifier { name: obj }, Expr::Identifier { name: method }) =
@@ -273,7 +274,13 @@ impl Runtime {
                         return Ok(result);
                     }
                 }
-                if let Expr::Member { object, property, optional: _ } = callee.as_ref() {
+                if let Expr::Member {
+                    object,
+                    property,
+                    optional: _,
+                    computed: _,
+                } = callee.as_ref()
+                {
                     if let Expr::Identifier { name } = property.as_ref() {
                         let obj = self.eval_expr(object)?;
                         if let Value::Array(arr) = &obj {
@@ -406,57 +413,34 @@ impl Runtime {
                 object,
                 property,
                 optional,
+                computed,
             } => {
                 let obj = self.eval_expr(object)?;
                 if *optional && matches!(&obj, Value::Null) {
                     return Ok(Value::Null);
                 }
-                let key = match property.as_ref() {
-                    Expr::Identifier { name } => {
-                        if matches!(&obj, Value::Array(_)) {
-                            // For arrays: "length" is built-in. For indices like arr[i], evaluate variable.
-                            // CleverScript: .push not supported — use styler.arrayConcat(arr, [x])
-                            if name == "length" {
-                                name.clone()
-                            } else if name == "push" {
-                                return Err(RuntimeError::Runtime(
-                                    "CleverScript: .push not supported, use styler.arrayConcat(arr, [x])".to_string(),
-                                ));
-                            } else {
-                                let v = self.eval_expr(property)?;
-                                match v {
-                                    Value::Number(n) => (n as usize).to_string(),
-                                    _ => {
-                                        return Err(RuntimeError::Runtime(
-                                            "Array index must be number".to_string(),
-                                        ))
-                                    }
-                                }
-                            }
-                        } else {
-                            name.clone()
+                // Non-computed `.push` on arrays: fail before key resolve (historical CleverScript rule).
+                if !*computed {
+                    if let (Value::Array(_), Expr::Identifier { name }) =
+                        (&obj, property.as_ref())
+                    {
+                        if name == "push" {
+                            return Err(RuntimeError::Runtime(
+                                "CleverScript: .push not supported, use styler.arrayConcat(arr, [x])"
+                                    .to_string(),
+                            ));
                         }
                     }
-                    Expr::Literal(Literal::Number(n)) => (*n as usize).to_string(),
-                    _ => {
-                        let v = self.eval_expr(property)?;
-                        match v {
-                            Value::Number(n) => (n as usize).to_string(),
-                            Value::String(s) => s,
-                            _ => {
-                                return Err(RuntimeError::Runtime(
-                                    "Member property must evaluate to string or number".to_string(),
-                                ))
-                            }
-                        }
-                    }
-                };
+                }
+                let key = self.resolve_member_key(property, *computed)?;
                 match &obj {
                     Value::Object(o) => {
                         // CleverScript: objects have string keys only. No synthetic length.
                         o.get(&key)
                             .cloned()
-                            .ok_or_else(|| RuntimeError::Runtime(format!("Property '{}' not found", key)))
+                            .ok_or_else(|| {
+                                RuntimeError::Runtime(format!("Property '{}' not found", key))
+                            })
                     }
                     Value::Array(a) => {
                         if key == "length" {
@@ -465,9 +449,9 @@ impl Runtime {
                             let i: usize = key.parse().map_err(|_| {
                                 RuntimeError::Runtime("Array index must be number".to_string())
                             })?;
-                            a.get(i)
-                                .cloned()
-                                .ok_or_else(|| RuntimeError::Runtime(format!("Index {} out of bounds", i)))
+                            a.get(i).cloned().ok_or_else(|| {
+                                RuntimeError::Runtime(format!("Index {} out of bounds", i))
+                            })
                         }
                     }
                     Value::String(s) => {
@@ -593,27 +577,13 @@ impl Runtime {
                         object,
                         property,
                         optional,
+                        computed,
                     } => {
                         let mut obj = self.eval_expr(object)?;
                         if *optional && matches!(&obj, Value::Null) {
                             return Ok(Value::Null);
                         }
-                        let key = match property.as_ref() {
-                            Expr::Identifier { name } => name.clone(),
-                            Expr::Literal(Literal::Number(n)) => (*n as usize).to_string(),
-                            _ => {
-                                let v = self.eval_expr(property)?;
-                                match v {
-                                    Value::Number(n) => (n as usize).to_string(),
-                                    Value::String(s) => s,
-                                    _ => {
-                                        return Err(RuntimeError::Runtime(
-                                            "Member key must be string or number".to_string(),
-                                        ));
-                                    }
-                                }
-                            }
-                        };
+                        let key = self.resolve_member_key(property, *computed)?;
                         match &mut obj {
                             Value::Object(o) => {
                                 o.insert(key, val.clone());
@@ -672,6 +642,26 @@ impl Runtime {
                     self.collect_jsx_children(fc, vals);
                 }
             }
+        }
+    }
+
+    /// Resolve `obj.prop` vs `obj[expr]` member key.
+    /// Non-computed Identifier/number literals use the name as-is; computed always evaluates.
+    fn resolve_member_key(&mut self, property: &Expr, computed: bool) -> Result<String, RuntimeError> {
+        if !computed {
+            match property {
+                Expr::Identifier { name } => return Ok(name.clone()),
+                Expr::Literal(Literal::Number(n)) => return Ok((*n as usize).to_string()),
+                _ => {}
+            }
+        }
+        let v = self.eval_expr(property)?;
+        match v {
+            Value::Number(n) => Ok((n as usize).to_string()),
+            Value::String(s) => Ok(s),
+            _ => Err(RuntimeError::Runtime(
+                "Member property must evaluate to string or number".to_string(),
+            )),
         }
     }
 

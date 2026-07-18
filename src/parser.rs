@@ -1044,6 +1044,7 @@ fn parse_postfix(stream: &mut TokenStream) -> Result<Expr, RuntimeError> {
                         name: name.clone(),
                     }),
                     optional: false,
+                    computed: false,
                 }
             }
             Token::QuestionDot => {
@@ -1064,23 +1065,24 @@ fn parse_postfix(stream: &mut TokenStream) -> Result<Expr, RuntimeError> {
                         optional: true,
                     }
                 } else {
-                    let property = if stream.peek() == &Token::LBrack {
+                    let (property, computed) = if stream.peek() == &Token::LBrack {
                         stream.next();
                         let index = parse_expression(stream)?;
                         expect_token(stream, Token::RBrack)?;
-                        Box::new(index)
+                        (Box::new(index), true)
                     } else {
                         let name = if eat_token(stream, Token::Keyword(Keyword::Default)) {
                             "default".to_string()
                         } else {
                             expect_ident(stream)?
                         };
-                        Box::new(Expr::Identifier { name })
+                        (Box::new(Expr::Identifier { name }), false)
                     };
                     Expr::Member {
                         object: Box::new(expr),
                         property,
                         optional: true,
+                        computed,
                     }
                 }
             }
@@ -1092,6 +1094,7 @@ fn parse_postfix(stream: &mut TokenStream) -> Result<Expr, RuntimeError> {
                     object: Box::new(expr),
                     property: Box::new(index),
                     optional: false,
+                    computed: true,
                 }
             }
             Token::Incr => {

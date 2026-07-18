@@ -394,10 +394,11 @@ fn check_map_keys_in_expr(expr: &Expr) -> Result<(), RuntimeError> {
     match expr {
         Expr::Call { callee, arguments, .. } => {
             // Check for arr.map(callback) - callback returning JSX must have key
-            if let Expr::Member {
+              if let Expr::Member {
                 object: _,
                 property,
                 optional: false,
+                computed: _,
             } = callee.as_ref()
             {
                 if let Expr::Identifier { name } = property.as_ref() {
