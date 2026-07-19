@@ -293,6 +293,13 @@ impl Runtime {
                                 return Ok(result);
                             }
                         }
+                        if let Value::Object(map) = &obj {
+                            if matches!(map.get("__type"), Some(Value::String(t)) if t == "Date") {
+                                if let Some(result) = self.date_instance_method(name, map, &args)? {
+                                    return Ok(result);
+                                }
+                            }
+                        }
                     }
                 }
                 let f = self.eval_expr(callee)?;
@@ -1553,11 +1560,15 @@ impl Runtime {
         Ok(result)
     }
 
-    /// Array instance methods: arr.map(fn), arr.filter(fn), arr.find(fn), arr.concat(arr2)
+    /// Array instance methods: arr.map(fn), arr.filter(fn), arr.find(fn), arr.concat(arr2),
+    /// arr.sort(compareFn?), arr.slice(start?, end?)
+    ///
+    /// Note: CleverScript values are copied into method receivers, so `sort`/`slice` return a
+    /// **new** array (ES mutates in place). Prefer `const s = arr.slice().sort(...)`.
     fn array_method(&mut self, name: &str, arr: &[Value], args: &[Value]) -> Result<Option<Value>, RuntimeError> {
         let cb = match name {
             "map" | "filter" | "find" => args.first().cloned(),
-            "concat" => None,
+            "concat" | "sort" | "slice" => None,
             _ => return Ok(None),
         };
         let result = match name {
@@ -1634,6 +1645,101 @@ impl Runtime {
                     }
                 }
                 Value::Array(out)
+            }
+            "slice" => {
+                let len = arr.len() as isize;
+                let start_raw = args
+                    .first()
+                    .and_then(|v| if let Value::Number(n) = v { Some(*n as isize) } else { None })
+                    .unwrap_or(0);
+                let end_raw = args
+                    .get(1)
+                    .and_then(|v| if let Value::Number(n) = v { Some(*n as isize) } else { None })
+                    .unwrap_or(len);
+                let mut start = start_raw;
+                let mut end = end_raw;
+                if start < 0 {
+                    start = len + start;
+                }
+                if end < 0 {
+                    end = len + end;
+                }
+                start = start.clamp(0, len);
+                end = end.clamp(0, len);
+                if start > end {
+                    Value::Array(vec![])
+                } else {
+                    Value::Array(arr[start as usize..end as usize].to_vec())
+                }
+            }
+            "sort" => {
+                if arr.len() > MAX_ARRAY_LENGTH {
+                    return Err(RuntimeError::Runtime(format!(
+                        "Array length {} exceeds max {}",
+                        arr.len(),
+                        MAX_ARRAY_LENGTH
+                    )));
+                }
+                let mut out = arr.to_vec();
+                let cmp = args.first().cloned();
+                // Insertion sort so we can call compareFn with &mut self.
+                for i in 1..out.len() {
+                    let mut j = i;
+                    while j > 0 {
+                        let ord = if let Some(ref f) = cmp {
+                            let r = self.call_value(f, &[out[j - 1].clone(), out[j].clone()])?;
+                            match r {
+                                Value::Number(n) if n < 0.0 => std::cmp::Ordering::Less,
+                                Value::Number(n) if n > 0.0 => std::cmp::Ordering::Greater,
+                                Value::Number(_) => std::cmp::Ordering::Equal,
+                                other if other.is_truthy() => std::cmp::Ordering::Greater,
+                                _ => std::cmp::Ordering::Equal,
+                            }
+                        } else {
+                            default_sort_cmp(&out[j - 1], &out[j])
+                        };
+                        if ord == std::cmp::Ordering::Greater {
+                            out.swap(j - 1, j);
+                            j -= 1;
+                        } else {
+                            break;
+                        }
+                    }
+                }
+                Value::Array(out)
+            }
+            _ => return Ok(None),
+        };
+        Ok(Some(result))
+    }
+
+    /// Date instance methods on `{ __type: "Date", __ms }` from `Date.from(...)`.
+    fn date_instance_method(
+        &mut self,
+        name: &str,
+        map: &HashMap<String, Value>,
+        _args: &[Value],
+    ) -> Result<Option<Value>, RuntimeError> {
+        let ms = match map.get("__ms") {
+            Some(Value::Number(n)) => *n,
+            _ => return Ok(None),
+        };
+        let (y, mo, d, hh, mm, ss, _wd) = crate::run_state::ms_to_utc_parts(ms);
+        let result = match name {
+            "getTime" => Value::Number(ms),
+            "getFullYear" | "getUTCFullYear" => Value::Number(y as f64),
+            "getMonth" | "getUTCMonth" => Value::Number((mo as f64) - 1.0),
+            "getDate" | "getUTCDate" => Value::Number(d as f64),
+            "getHours" | "getUTCHours" => Value::Number(hh as f64),
+            "getMinutes" | "getUTCMinutes" => Value::Number(mm as f64),
+            "getSeconds" | "getUTCSeconds" => Value::Number(ss as f64),
+            "toISOString" => {
+                let ms_int = ms.floor() as i64;
+                let frac = (ms_int.rem_euclid(1000)) as u32;
+                Value::String(format!(
+                    "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}.{:03}Z",
+                    y, mo, d, hh, mm, ss, frac
+                ))
             }
             _ => return Ok(None),
         };
@@ -1756,6 +1862,21 @@ impl Runtime {
             }
             "toLowerCase" => Value::String(s.to_lowercase()),
             "toUpperCase" => Value::String(s.to_uppercase()),
+            "replaceAll" => {
+                let from = _args
+                    .first()
+                    .and_then(|v| if let Value::String(x) = v { Some(x.as_str()) } else { None })
+                    .unwrap_or("");
+                let to = _args
+                    .get(1)
+                    .and_then(|v| if let Value::String(x) = v { Some(x.as_str()) } else { None })
+                    .unwrap_or("");
+                if from.is_empty() {
+                    Value::String(s.to_string())
+                } else {
+                    Value::String(s.replace(from, to))
+                }
+            }
             _ => return Ok(None),
         };
         Ok(Some(result))
@@ -2017,6 +2138,17 @@ impl Runtime {
             ));
         }
         Ok(Value::Object(exports))
+    }
+}
+
+
+fn default_sort_cmp(a: &Value, b: &Value) -> std::cmp::Ordering {
+    match (a, b) {
+        (Value::Number(x), Value::Number(y)) => x.partial_cmp(y).unwrap_or(std::cmp::Ordering::Equal),
+        (Value::String(x), Value::String(y)) => x.cmp(y),
+        (Value::Number(x), _) => format!("{}", x).cmp(&format!("{:?}", b)),
+        (Value::String(x), _) => x.cmp(&format!("{:?}", b)),
+        _ => format!("{:?}", a).cmp(&format!("{:?}", b)),
     }
 }
 

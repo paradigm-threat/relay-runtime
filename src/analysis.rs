@@ -636,7 +636,7 @@ fn collect_hook_calls_in_expr(expr: &Expr, out: &mut Vec<HookCallSite>, slot: &m
 fn check_undefined_variables(program: &Program) -> Result<(), RuntimeError> {
     let mut scope: Vec<HashSet<String>> = vec![HashSet::new()];
     // Host-injected bindings - provided by host at runtime
-    for name in ["params", "env", "navigate", "createElement", "fetch", "useState", "useEffect", "useCallback", "useRef", "localStorage", "lazy", "Suspense", "globalThis", "JSON", "Object", "Array", "Promise", "Error", "Date", "AbortSignal", "console", "document", "alert", "setInterval", "clearInterval", "Relay"] {
+    for name in ["params", "env", "navigate", "createElement", "fetch", "useState", "useEffect", "useCallback", "useRef", "localStorage", "lazy", "Suspense", "globalThis", "JSON", "Object", "Array", "Promise", "Error", "Date", "Math", "Number", "parseInt", "parseFloat", "undefined", "AbortSignal", "console", "document", "alert", "setInterval", "clearInterval", "Relay"] {
         scope.last_mut().unwrap().insert(name.to_string());
     }
 

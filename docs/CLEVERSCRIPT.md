@@ -13,8 +13,21 @@ When CleverScript runs as **`server.hooks.*`** modules (`.cs`), the relay-gatewa
 - **`@relay/git`** — `readFile`, `readFileBase64`
 - **`@relay/search/sqlite`** / **`@relay/search/redb`** — `search(ctx)` for QUERY (Rust FTS / filter); optional `config` path (default tip `search.yaml`); preferred over returning `{ plugin: "sqlite" }`
 - On GET / raster resize paths only: **`@relay/image`**, **`@relay/ipfs`**, **`@relay/md`**
+- Always (server + client SSR/WASM): **`@relay/util`**, **`@relay/path`**, **`@relay/date`**, **`@relay/catalog`**, **`@relay/ui`** — tip ergonomics (sort/take, basename, ChangeLog date formats, nav-index parse/tree, Link/RadioTabs/cachedGet)
 
 Use top-level **`import { … } from '@relay/…'`**. The global **`Relay`** is **`null`**; prefer imports for new scripts.
+
+### ES builtins (stdlib)
+
+| Name | Notes |
+|------|--------|
+| `undefined` | Alias of `null` |
+| `parseInt` / `parseFloat` | Invalid → `null` |
+| `Number.from` / `isFinite` / `isInteger` | No callable-with-properties; use `Number.from(x)` not `Number(x)` |
+| `Math.min\|max\|abs\|floor\|ceil\|round` | |
+| `Date.now` / `Date.parse` / `Date.from` | No `new Date` yet; instances are `{ __type: "Date", __ms }` with UTC getters + `toISOString` |
+| `Array#sort` / `#slice` | **Return new arrays** (CS value copy semantics; not ES in-place mutate) |
+| `String#replaceAll` | String search only |
 
 ---
 
@@ -26,7 +39,7 @@ Use top-level **`import { … } from '@relay/…'`**. The global **`Relay`** is 
 - Numbers: `0`, `1.5`, `-3`
 - Strings: `"hello"`, `'world'`
 - **Template literals** `` `…${expr}…` `` — expanded at lex time to string literals and `+` (same meaning as concatenation). Static parts support escapes such as `` \` ``, `\${`, `\\`, `\n`, etc. **MVP caveat:** each `${…}` runs until a matching `}` by **brace depth only**; `{` / `}` inside `"strings"`, `'strings'`, nested `` `…` ``, or comments can confuse the scanner—extract a variable or use `+` for those cases.
-- **String instance helpers** (receiver must be a string): `split(sep?)`, `trim()`, `startsWith(prefix)`, `indexOf`, `lastIndexOf`, `slice`, `charAt`, `toLowerCase()`, `toUpperCase()` — useful in server hooks (e.g. case-insensitive file extensions). `.length` is supported.
+- **String instance helpers** (receiver must be a string): `split(sep?)`, `trim()`, `startsWith(prefix)`, `indexOf`, `lastIndexOf`, `slice`, `charAt`, `toLowerCase()`, `toUpperCase()`, `replaceAll(from, to)` — useful in server hooks (e.g. case-insensitive file extensions). `.length` is supported.
 
 ### 1.2 Objects
 
@@ -42,7 +55,7 @@ Use top-level **`import { … } from '@relay/…'`**. The global **`Relay`** is 
 - Shallow array spread: `[...a, x, ...b]` (arrays only; length limit enforced)
 - Length: `arr.length`
 - Index access: `arr[i]` (where `i` is a numeric variable or literal)
-- Methods: `map`, `filter`, `find`, `concat`
+- Methods: `map`, `filter`, `find`, `concat`, `slice`, `sort(compareFn?)` (sort/slice return **new** arrays)
 - Building arrays: prefer `concat` or spread; **no** `arr.push()` in core
 
 ### 1.4 Operators

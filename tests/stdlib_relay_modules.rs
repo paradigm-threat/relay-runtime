@@ -1,0 +1,130 @@
+//! ES6 builtins + @relay/* smoke tests for CleverScript host helpers.
+
+use relay_runtime::host::{host_fetch_object, Host, HostHandle, MockHost};
+use relay_runtime::run_state::{
+    clear_tip_get_cache, inject_standard_builtins, set_host_for_lazy, tip_cached_get,
+};
+use relay_runtime::value::Value;
+use relay_runtime::{analyze, parse, Runtime};
+use std::cell::RefCell;
+use std::rc::Rc;
+
+fn eval_expr(src: &str) -> Value {
+    let wrapped = format!("export default function App() {{ return ({src}); }}");
+    let program = parse(&wrapped).expect("parse");
+    let analysis = analyze(&program).expect("analyze");
+    let mut rt = Runtime::new(program, analysis).with_host(MockHost::new());
+    inject_standard_builtins(&rt);
+    let exports = rt.get_module_exports().expect("exports");
+    let f = match exports {
+        Value::Object(map) => map.get("default").cloned().expect("default"),
+        _ => panic!("expected object exports"),
+    };
+    rt.call_value(&f, &[]).expect("call")
+}
+
+#[test]
+fn parse_int_math_number_sort_replace_all() {
+    assert_eq!(eval_expr(r#"parseInt("42", 10)"#), Value::Number(42.0));
+    assert_eq!(eval_expr(r#"Math.max(1, 9, 3)"#), Value::Number(9.0));
+    assert_eq!(eval_expr(r#"Number.from("3.5")"#), Value::Number(3.5));
+    assert_eq!(
+        eval_expr(r#"[3,1,2].sort((a,b) => a - b)"#),
+        Value::Array(vec![
+            Value::Number(1.0),
+            Value::Number(2.0),
+            Value::Number(3.0)
+        ])
+    );
+    assert_eq!(
+        eval_expr(r#""aa-bb-aa".replaceAll("aa", "x")"#),
+        Value::String("x-bb-x".into())
+    );
+    assert!(matches!(eval_expr("undefined"), Value::Null));
+}
+
+#[test]
+fn date_from_and_iso() {
+    let v = eval_expr(r#"Date.from("2020-01-02T03:04:05Z").toISOString()"#);
+    match v {
+        Value::String(s) => assert!(s.starts_with("2020-01-02T03:04:05"), "{s}"),
+        other => panic!("unexpected {other:?}"),
+    }
+}
+
+#[test]
+fn relay_path_util_modules() {
+    let src = r#"
+import { basename, join } from '@relay/path';
+import { take, sortBy } from '@relay/util';
+import { formatTiny } from '@relay/date';
+export default function App() {
+  const rows = [{ path: 'b.md', _updated: '2020-01-01' }, { path: 'a.md', _updated: '2021-01-01' }];
+  const sorted = sortBy(rows, '_updated', true);
+  return basename(join(['docs', 'x.md'])) + '|' + take(sorted, 1)[0].path + '|' + formatTiny('2026-07-18T00:00:00Z');
+}
+"#;
+    let program = parse(src).expect("parse");
+    let analysis = analyze(&program).expect("analyze");
+    struct RelayHost;
+    impl Host for RelayHost {
+        fn fetch(&self, url: &str, _: Option<&Value>) -> Result<Value, String> {
+            Ok(host_fetch_object(true, 200.0, format!("body:{url}"), None))
+        }
+        fn navigate(&self, _: &str) -> Result<(), String> {
+            Ok(())
+        }
+        fn create_element(
+            &self,
+            tag: &str,
+            props: &Value,
+            children: &[Value],
+        ) -> Result<Value, String> {
+            Ok(Value::Object(
+                [
+                    ("type".into(), Value::String("element".into())),
+                    ("tag".into(), Value::String(tag.into())),
+                    ("props".into(), props.clone()),
+                    ("children".into(), Value::Array(children.to_vec())),
+                ]
+                .into_iter()
+                .collect(),
+            ))
+        }
+        fn load_module(&self, path: &str) -> Result<Value, String> {
+            relay_runtime::relay_modules::try_load_relay_module(path)
+                .ok_or_else(|| format!("missing {path}"))
+        }
+        fn log(&self, _: &str, _: &str) {}
+    }
+    let host: HostHandle = Rc::new(RefCell::new(RelayHost));
+    let mut rt = Runtime::new(program, analysis).with_host(host);
+    inject_standard_builtins(&rt);
+    let exports = rt.get_module_exports().expect("exports");
+    let f = match exports {
+        Value::Object(o) => o.get("default").cloned().unwrap(),
+        _ => panic!(),
+    };
+    let out = rt.call_value(&f, &[]).expect("call");
+    match out {
+        Value::String(s) => {
+            assert!(s.starts_with("x.md|a.md|"), "{s}");
+            assert!(s.contains("Jul"), "{s}");
+        }
+        other => panic!("{other:?}"),
+    }
+}
+
+#[test]
+fn tip_cached_get_dedupes_fetch() {
+    clear_tip_get_cache();
+    let host = MockHost::new();
+    set_host_for_lazy(Some(host.clone()));
+    let a = tip_cached_get("/nav-index.txt").unwrap();
+    let b = tip_cached_get("/nav-index.txt").unwrap();
+    assert_eq!(a, b);
+    let calls = host.borrow().fetch_calls.borrow().len();
+    assert_eq!(calls, 1, "expected single fetch, got {calls}");
+    set_host_for_lazy(None);
+    clear_tip_get_cache();
+}

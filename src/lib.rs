@@ -12,6 +12,7 @@ pub mod host;
 pub mod html;
 pub mod lexer;
 pub mod markdown_host;
+pub mod relay_modules;
 pub mod session_theme;
 pub mod style_host;
 pub mod video_host;
@@ -43,8 +44,9 @@ pub use html::{
     escape_html_text, escape_json_for_html_script, vnode_to_html, HtmlRenderOptions,
 };
 pub use run_state::{
-    clear_run_state, clear_handler_registry_for_vnode_pass, consume_render_requested, invoke_handler,
-    invoke_handler_value, register_handler, run_hook_persistent, with_isolated_hook_run,
+    clear_run_state, clear_handler_registry_for_vnode_pass, clear_tip_get_cache, consume_render_requested, invoke_handler,
+    invoke_handler_value, register_handler, run_hook_persistent, set_host_for_lazy, tip_cached_get,
+    with_isolated_hook_run,
 };
 pub use session_theme::{
     clear_session_theme, effective_theme_yaml, get_session_theme_yaml, looks_like_theme_yaml,
