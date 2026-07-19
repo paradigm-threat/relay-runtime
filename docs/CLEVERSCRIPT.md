@@ -15,7 +15,19 @@ When CleverScript runs as **`server.hooks.*`** modules (`.cs`), the relay-gatewa
 - On GET / raster resize paths only: **`@relay/image`**, **`@relay/ipfs`**, **`@relay/md`**
 - Always (server + client SSR/WASM): **`@relay/util`**, **`@relay/path`**, **`@relay/date`**, **`@relay/catalog`**, **`@relay/ui`** — tip ergonomics (sort/take, basename, ChangeLog date formats, nav-index parse/tree, Link/RadioTabs/cachedGet)
 
-Use top-level **`import { … } from '@relay/…'`**. The global **`Relay`** is **`null`**; prefer imports for new scripts.
+Top-level **`import { … } from '@relay/…'`**. The global **`Relay`** is **`null`**; prefer imports for new scripts.
+
+| Module | Exports (summary) |
+|--------|-------------------|
+| `@relay/util` | `sortBy`, `take`, `prop`, `omitUndefined` |
+| `@relay/path` | `basename`, `dirname`, `extname`, `join`, `split` |
+| `@relay/date` | `formatTiny` / `formatLong` / `formatFeed` / `sameDay` |
+| `@relay/catalog` | `parseNavIndexTxt`, `loadNavIndex`, `contentKind`, `buildDirTree`, `publishedFromBlogPath` |
+| `@relay/ui` | `cachedGet`, `Link`, `RadioTabs`, `safeProps` / `omitUndefined` |
+| `@relay/tts` | `synthesize({ text, voiceId?, baseUrl?, endpoints? })` → data URL; `AudioPlayer` → `relay-audio-player` |
+
+**`fetch` binary bodies:** pass `{ responseType: 'base64' }` in options; response may include **`base64`** + **`contentType`** (web XHR). Used by `@relay/tts.synthesize` for Piper `POST /tts`.
+
 
 ### ES builtins (stdlib)
 

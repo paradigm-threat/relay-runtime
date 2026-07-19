@@ -32,7 +32,10 @@ pub fn host_fetch_object(
 }
 
 /// Serialize optional `fetch` options for host bridges (JS / JNI).
-/// Includes `method` and optional string `body` (needed for QUERY / POST).
+/// Includes `method`, optional string `body`, optional `headers`, and `responseType`.
+///
+/// Set **`responseType`: `"base64"`** for binary bodies (e.g. Piper `/tts` WAV). The host
+/// returns **`base64`** + **`contentType`** on the response object; **`text`** may be empty.
 pub fn fetch_options_json(options: Option<&Value>) -> String {
     let method = options
         .and_then(|o| match o {
@@ -53,10 +56,40 @@ pub fn fetch_options_json(options: Option<&Value>) -> String {
             Value::String(s) => Some(s.clone()),
             _ => None,
         });
+    let response_type = options
+        .and_then(|o| match o {
+            Value::Object(map) => map.get("responseType"),
+            _ => None,
+        })
+        .and_then(|v| match v {
+            Value::String(s) => Some(s.clone()),
+            _ => None,
+        });
+    let headers = options.and_then(|o| match o {
+        Value::Object(map) => map.get("headers").and_then(|h| match h {
+            Value::Object(hm) => {
+                let mut m = serde_json::Map::new();
+                for (k, v) in hm {
+                    if let Value::String(s) = v {
+                        m.insert(k.clone(), serde_json::Value::String(s.clone()));
+                    }
+                }
+                Some(serde_json::Value::Object(m))
+            }
+            _ => None,
+        }),
+        _ => None,
+    });
     let mut obj = serde_json::Map::new();
     obj.insert("method".to_string(), serde_json::Value::String(method));
     if let Some(b) = body {
         obj.insert("body".to_string(), serde_json::Value::String(b));
+    }
+    if let Some(rt) = response_type {
+        obj.insert("responseType".to_string(), serde_json::Value::String(rt));
+    }
+    if let Some(h) = headers {
+        obj.insert("headers".to_string(), h);
     }
     serde_json::Value::Object(obj).to_string()
 }

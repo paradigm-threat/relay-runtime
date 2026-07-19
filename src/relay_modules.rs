@@ -10,6 +10,7 @@ pub const RELAY_PATH: &str = "@relay/path";
 pub const RELAY_DATE: &str = "@relay/date";
 pub const RELAY_CATALOG: &str = "@relay/catalog";
 pub const RELAY_UI: &str = "@relay/ui";
+pub const RELAY_TTS: &str = "@relay/tts";
 
 /// Resolve pure `@relay/*` modules. Returns `None` for unknown specs.
 pub fn try_load_relay_module(path: &str) -> Option<Value> {
@@ -19,6 +20,7 @@ pub fn try_load_relay_module(path: &str) -> Option<Value> {
         RELAY_DATE | "@relay/date.js" => Some(date_module()),
         RELAY_CATALOG | "@relay/catalog.js" => Some(catalog_module()),
         RELAY_UI | "@relay/ui.js" => Some(ui_module()),
+        RELAY_TTS | "@relay/tts.js" => Some(tts_module()),
         _ => None,
     }
 }
@@ -693,6 +695,160 @@ fn ui_module() -> Value {
             let mut kids = vec![style_el, toolbar];
             kids.extend(panel_els);
             Ok(el("section", root_props, kids))
+        }),
+    );
+    named_exports(m)
+}
+
+// --- tts ---
+
+pub const AUDIO_PLAYER_TAG: &str = "relay-audio-player";
+
+fn tts_module() -> Value {
+    let mut m = HashMap::new();
+    m.insert(
+        "AudioPlayer".into(),
+        Value::Native(|args| {
+            let props = arg_obj(args, 0).unwrap_or_default();
+            let src = match props.get("src") {
+                Some(Value::String(s)) if !s.is_empty() => s.clone(),
+                _ => return Err("AudioPlayer: src is required".into()),
+            };
+            let mut out = HashMap::new();
+            out.insert("src".into(), Value::String(src));
+            if let Some(Value::Bool(b)) = props.get("playing") {
+                out.insert("playing".into(), Value::Bool(*b));
+            }
+            if let Some(Value::Bool(b)) = props.get("controls") {
+                out.insert("controls".into(), Value::Bool(*b));
+            }
+            if let Some(Value::Number(n)) = props.get("playbackRate") {
+                out.insert("playbackRate".into(), Value::Number(*n));
+            }
+            if let Some(Value::Number(n)) = props.get("command") {
+                out.insert("command".into(), Value::Number(*n));
+            }
+            if let Some(Value::Number(n)) = props.get("commandSeq") {
+                out.insert("commandSeq".into(), Value::Number(*n));
+            }
+            if let Some(Value::Number(n)) = props.get("commandArg") {
+                out.insert("commandArg".into(), Value::Number(*n));
+            }
+            if let Some(Value::String(s)) = props.get("className") {
+                out.insert("className".into(), Value::String(s.clone()));
+            }
+            if let Some(Value::String(s)) = props.get("playerId") {
+                out.insert("playerId".into(), Value::String(s.clone()));
+            }
+            for key in ["onPlay", "onPause", "onEnded", "onError"] {
+                if let Some(v) = props.get(key) {
+                    match v {
+                        Value::Function { .. }
+                        | Value::Native(_)
+                        | Value::NativeFn(_)
+                        | Value::Setter(_) => {
+                            out.insert(key.into(), v.clone());
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            Ok(el(AUDIO_PLAYER_TAG, out, vec![]))
+        }),
+    );
+    m.insert(
+        "synthesize".into(),
+        Value::Native(|args| {
+            let opts = arg_obj(args, 0).unwrap_or_default();
+            let text = match opts.get("text") {
+                Some(Value::String(s)) => s.trim().to_string(),
+                _ => String::new(),
+            };
+            if text.is_empty() {
+                return Err("synthesize: text is required".into());
+            }
+            if text.len() > 8000 {
+                return Err("synthesize: text exceeds 8000 chars".into());
+            }
+            let mut bases: Vec<String> = Vec::new();
+            if let Some(Value::String(s)) = opts.get("baseUrl") {
+                if !s.is_empty() {
+                    bases.push(s.trim_end_matches('/').to_string());
+                }
+            }
+            if let Some(Value::Array(arr)) = opts.get("endpoints") {
+                for v in arr {
+                    if let Value::String(s) = v {
+                        let t = s.trim_end_matches('/');
+                        if !t.is_empty() {
+                            bases.push(t.to_string());
+                        }
+                    }
+                }
+            }
+            if bases.is_empty() {
+                bases.push("https://dfw1.relaygateway.net".into());
+                bases.push("https://lon1.relaygateway.net".into());
+                bases.push("https://hkg1.relaygateway.net".into());
+            }
+            let voice_id = match opts.get("voiceId") {
+                Some(Value::String(s)) if !s.is_empty() => s.clone(),
+                _ => "en_US-lessac-medium".to_string(),
+            };
+            let host = crate::run_state::get_host_for_lazy()
+                .ok_or_else(|| "synthesize: no host".to_string())?;
+            let mut body_obj = serde_json::Map::new();
+            body_obj.insert("text".into(), serde_json::Value::String(text));
+            body_obj.insert("voiceId".into(), serde_json::Value::String(voice_id));
+            let body = serde_json::Value::Object(body_obj).to_string();
+            let mut last_err = String::from("synthesize: all endpoints failed");
+            for base in bases {
+                let url = format!("{base}/tts");
+                let mut headers = HashMap::new();
+                headers.insert(
+                    "Content-Type".into(),
+                    Value::String("application/json".into()),
+                );
+                let mut fo = HashMap::new();
+                fo.insert("method".into(), Value::String("POST".into()));
+                fo.insert("body".into(), Value::String(body.clone()));
+                fo.insert("responseType".into(), Value::String("base64".into()));
+                fo.insert("headers".into(), Value::Object(headers));
+                let resp = match host.borrow().fetch(&url, Some(&Value::Object(fo))) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        last_err = e;
+                        continue;
+                    }
+                };
+                let Value::Object(map) = resp else {
+                    last_err = "synthesize: bad response".into();
+                    continue;
+                };
+                let ok = matches!(map.get("ok"), Some(Value::Bool(true)));
+                let status = match map.get("status") {
+                    Some(Value::Number(n)) => *n,
+                    _ => 0.0,
+                };
+                if !ok || status < 200.0 || status >= 300.0 {
+                    last_err = format!("synthesize: HTTP {status} from {base}");
+                    continue;
+                }
+                let b64 = match map.get("base64") {
+                    Some(Value::String(s)) if !s.is_empty() => s.clone(),
+                    _ => {
+                        last_err = "synthesize: empty audio".into();
+                        continue;
+                    }
+                };
+                let ctype = match map.get("contentType") {
+                    Some(Value::String(s)) if !s.is_empty() => s.clone(),
+                    _ => "audio/wav".to_string(),
+                };
+                let data_url = format!("data:{ctype};base64,{b64}");
+                return Ok(Value::String(data_url));
+            }
+            Err(last_err)
         }),
     );
     named_exports(m)

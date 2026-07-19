@@ -217,12 +217,14 @@ export function installRelayHostFetch() {
     let method = 'GET';
     let headers = null;
     let body = null;
+    let responseType = '';
     try {
       if (initJson && String(initJson).length) {
         const o = JSON.parse(String(initJson));
         if (o && o.method) method = String(o.method).toUpperCase();
         if (o && o.headers && typeof o.headers === 'object') headers = o.headers;
         if (o && typeof o.body === 'string') body = o.body;
+        if (o && typeof o.responseType === 'string') responseType = o.responseType;
       }
     } catch {
       /* ignore */
@@ -242,6 +244,8 @@ export function installRelayHostFetch() {
     try {
       const xhr = new XMLHttpRequest();
       xhr.open(method, fetchUrl, false);
+      const wantBase64 = responseType === 'base64' || responseType === 'arraybuffer';
+      if (wantBase64) xhr.responseType = 'arraybuffer';
       const branch = globalThis.__relay_fetch_branch;
       if (typeof branch === 'string' && branch.trim()) {
         xhr.setRequestHeader('X-Relay-Branch', branch.trim());
@@ -261,6 +265,27 @@ export function installRelayHostFetch() {
         xhr.send(null);
       }
       const ok = xhr.status >= 200 && xhr.status < 300;
+      if (wantBase64) {
+        const buf = xhr.response;
+        let b64 = '';
+        if (buf && buf.byteLength != null) {
+          const bytes = new Uint8Array(buf);
+          const chunk = 0x8000;
+          let binary = '';
+          for (let i = 0; i < bytes.length; i += chunk) {
+            binary += String.fromCharCode.apply(null, bytes.subarray(i, i + chunk));
+          }
+          b64 = btoa(binary);
+        }
+        const ct = xhr.getResponseHeader('Content-Type') || 'application/octet-stream';
+        return JSON.stringify({
+          ok,
+          status: xhr.status,
+          text: '',
+          base64: b64,
+          contentType: ct,
+        });
+      }
       return JSON.stringify({
         ok,
         status: xhr.status,
@@ -390,6 +415,63 @@ function attachMediaHandler(el, eventName, props, key, invokeHandler, onAfterInv
     }
     if (onAfterInvoke && consume_render_requested()) onAfterInvoke();
   });
+}
+
+/**
+ * Build native HTML5 audio shell for `relay-audio-player` VNodes.
+ * CleverScript controls: playing, command/commandSeq (1 play, 2 pause, 3 seek).
+ */
+function buildRelayAudioPlayer(props, invokeHandler, onAfterInvoke) {
+  const audio = document.createElement('audio');
+  audio.className = 'relay-audio-player';
+  audio.setAttribute('preload', 'auto');
+  audio.style.display = 'none';
+
+  const src = resolveMediaUrl(propStringFromVnodeProps(props, 'src'));
+  if (src) audio.src = src;
+
+  const controls = propBoolFromVnodePropsLoose(props, 'controls');
+  if (controls === true) {
+    audio.controls = true;
+    audio.style.display = 'block';
+  }
+
+  const playerId = propStringFromVnodeProps(props, 'playerId') || `rap-${Math.random().toString(36).slice(2)}`;
+  audio.dataset.relayPlayerId = playerId;
+
+  attachMediaHandler(audio, 'play', props, 'onPlay', invokeHandler, onAfterInvoke);
+  attachMediaHandler(audio, 'pause', props, 'onPause', invokeHandler, onAfterInvoke);
+  attachMediaHandler(audio, 'ended', props, 'onEnded', invokeHandler, onAfterInvoke);
+  attachMediaHandler(audio, 'error', props, 'onError', invokeHandler, onAfterInvoke);
+
+  const playing = propBoolFromVnodePropsLoose(props, 'playing');
+  if (playing === true) {
+    audio.play().catch(() => {});
+  } else if (playing === false) {
+    audio.pause();
+  }
+
+  const rate = propNumberFromVnodeProps(props, 'playbackRate');
+  if (rate != null && !Number.isNaN(rate)) audio.playbackRate = rate;
+
+  const cmdSeq = propNumberFromVnodeProps(props, 'commandSeq');
+  const cmd = propNumberFromVnodeProps(props, 'command');
+  const cmdArg = propNumberFromVnodeProps(props, 'commandArg');
+  if (cmdSeq != null && String(cmdSeq) !== audio.dataset.relayCommandSeq) {
+    audio.dataset.relayCommandSeq = String(cmdSeq);
+    if (cmd === 1) audio.play().catch(() => {});
+    else if (cmd === 2) audio.pause();
+    else if (cmd === 3 && cmdArg != null) audio.currentTime = cmdArg;
+    else if (cmd === 4) {
+      audio.pause();
+      audio.currentTime = 0;
+    }
+  }
+
+  const className = propStringFromVnodeProps(props, 'className');
+  if (className) audio.className = `${audio.className} ${className}`.trim();
+
+  return audio;
 }
 
 /**
@@ -578,7 +660,7 @@ function elementChildNodes(parent) {
 }
 
 function expectedDomTag(tag) {
-  if (tag === 'relay-video-player' || tag === 'relay-hook-renderer') return 'DIV';
+  if (tag === 'relay-video-player' || tag === 'relay-audio-player' || tag === 'relay-hook-renderer') return 'DIV';
   if (tag === 'fragment') return null;
   return String(tag || 'div').toUpperCase();
 }
@@ -708,6 +790,9 @@ export function vnodeToDom(v, invokeHandler = invoke_handler, onAfterInvoke = nu
     if (tag === 'relay-video-player') {
       return buildRelayVideoPlayer(props || {}, invokeHandler, onAfterInvoke);
     }
+    if (tag === 'relay-audio-player') {
+      return buildRelayAudioPlayer(props || {}, invokeHandler, onAfterInvoke);
+    }
     if (tag === 'fragment') {
       const frag = document.createDocumentFragment();
       for (const c of children || []) {
@@ -725,6 +810,9 @@ export function vnodeToDom(v, invokeHandler = invoke_handler, onAfterInvoke = nu
     const rawTag = v.tag === 'fragment' ? 'div' : v.tag;
     if (rawTag === 'relay-video-player') {
       return buildRelayVideoPlayer(v.props || {}, invokeHandler, onAfterInvoke);
+    }
+    if (rawTag === 'relay-audio-player') {
+      return buildRelayAudioPlayer(v.props || {}, invokeHandler, onAfterInvoke);
     }
     const el = createVnodeDomElement(rawTag);
     applyVnodeDomProps(el, rawTag, v.props, invokeHandler, onAfterInvoke);
