@@ -59,18 +59,33 @@ pub fn tip_cached_get(url: &str) -> Option<String> {
 
 /// Inject Array / JSON / Object / Date / Math / Number / parseInt / localStorage / undefined.
 /// Entry hooks get this via [`run_hook_persistent`]; imported modules must call it too.
+///
+/// Also mirrors JSON/Array/Object onto `globalThis` so `globalThis.JSON.parse` works
+/// (tip code previously noted bare `globalThis.JSON` as unreliable).
 pub fn inject_standard_builtins(runtime: &Runtime) {
     let mut env = runtime.env.borrow_mut();
     env.set("undefined", Value::Null);
     env.set("localStorage", localStorage_value());
-    env.set("Array", array_value());
-    env.set("JSON", json_value());
-    env.set("Object", object_value());
+    let array = array_value();
+    let json = json_value();
+    let object = object_value();
+    env.set("Array", array.clone());
+    env.set("JSON", json.clone());
+    env.set("Object", object.clone());
     env.set("Date", date_value());
     env.set("Math", math_value());
     env.set("Number", number_value());
     env.set("parseInt", Value::Native(parse_int_native));
     env.set("parseFloat", Value::Native(parse_float_native));
+
+    let mut gt = match env.get("globalThis") {
+        Some(Value::Object(o)) => o,
+        _ => std::collections::HashMap::new(),
+    };
+    gt.insert("JSON".to_string(), json);
+    gt.insert("Array".to_string(), array);
+    gt.insert("Object".to_string(), object);
+    env.set("globalThis", Value::Object(gt));
 }
 
 /// Build Array object with isArray for injection into runtime env.
@@ -435,6 +450,10 @@ pub fn object_value() -> Value {
 }
 
 /// Build JSON object with parse/stringify for injection into runtime env.
+///
+/// First-class CleverScript builtin (Rust `serde_json`). Supports nested
+/// objects/arrays of strings/numbers/bools/null — used by tip DOM buses
+/// (`JSON.stringify` gallery image lists into `data-*` attributes).
 pub fn json_value() -> Value {
     use crate::value::Value;
     let mut obj = std::collections::HashMap::new();
@@ -445,14 +464,16 @@ pub fn json_value() -> Value {
                 .first()
                 .and_then(|v| if let Value::String(x) = v { Some(x.as_str()) } else { None })
                 .ok_or("JSON.parse requires string")?;
-            let v: serde_json::Value = serde_json::from_str(s).map_err(|e| e.to_string())?;
+            let v: serde_json::Value =
+                serde_json::from_str(s).map_err(|e| format!("JSON.parse: {}", e))?;
             Ok(Value::from_json(&v))
         }),
     );
     obj.insert(
         "stringify".to_string(),
         Value::Native(|args: &[Value]| {
-            let v = args.first().ok_or("JSON.stringify requires value")?;
+            // ES: JSON.stringify() with no args → undefined (we return Null → "null").
+            let v = args.first().cloned().unwrap_or(Value::Null);
             Ok(Value::String(
                 serde_json::to_string(&v.to_json()).unwrap_or_else(|_| "null".to_string()),
             ))
