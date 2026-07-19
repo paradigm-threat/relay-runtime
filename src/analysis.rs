@@ -74,24 +74,44 @@ pub fn analyze(program: &Program) -> Result<AnalysisResult, RuntimeError> {
                     }
                 }
             }
-            Statement::ExportNamed { declaration } => {
-                let ExportNamedDecl::Function { id, body, .. } = declaration;
-                let is_component = function_returns_jsx(body);
-                if is_component {
-                    component_names.push(id.clone());
+            Statement::ExportNamed { declaration } => match declaration {
+                ExportNamedDecl::Function { id, body, .. } => {
+                    let is_component = function_returns_jsx(body);
+                    if is_component {
+                        component_names.push(id.clone());
+                    }
+                    result.named_exports.insert(
+                        id.clone(),
+                        ExportInfo {
+                            is_async: false,
+                            is_component,
+                        },
+                    );
+                    if is_component {
+                        let hooks = collect_hook_calls(body);
+                        result.hook_calls.insert(id.clone(), hooks);
+                    }
                 }
-                result.named_exports.insert(
-                    id.clone(),
-                    ExportInfo {
-                        is_async: false,
-                        is_component,
-                    },
-                );
-                if is_component {
-                    let hooks = collect_hook_calls(body);
-                    result.hook_calls.insert(id.clone(), hooks);
+                ExportNamedDecl::Variable { declarations, .. } => {
+                    for decl in declarations {
+                        if let Pattern::Identifier { name, .. } = &decl.id {
+                            let (is_component, hooks) =
+                                export_const_component_info(decl.init.as_deref());
+                            if is_component {
+                                component_names.push(name.clone());
+                                result.hook_calls.insert(name.clone(), hooks);
+                            }
+                            result.named_exports.insert(
+                                name.clone(),
+                                ExportInfo {
+                                    is_async: false,
+                                    is_component,
+                                },
+                            );
+                        }
+                    }
                 }
-            }
+            },
             Statement::FunctionDecl {
                 id,
                 body,
@@ -122,6 +142,18 @@ fn function_returns_jsx(body: &[Statement]) -> bool {
         }
     }
     false
+}
+
+/// `export const X = () => <div/>` / `export const X = function() { return <div/> }` component detection.
+fn export_const_component_info(init: Option<&Expr>) -> (bool, Vec<HookCallSite>) {
+    match init {
+        Some(Expr::ArrowFunction { body, .. }) => match body {
+            ArrowBody::Block(stmts) => (function_returns_jsx(stmts), collect_hook_calls(stmts)),
+            ArrowBody::Expr(e) => (expr_returns_jsx(e), Vec::new()),
+        },
+        Some(Expr::Function { body, .. }) => (function_returns_jsx(body), collect_hook_calls(body)),
+        _ => (false, Vec::new()),
+    }
 }
 
 fn stmt_returns_jsx(stmt: &Statement) -> bool {
@@ -374,12 +406,20 @@ fn check_map_keys_in_stmt(stmt: &Statement) -> Result<(), RuntimeError> {
                 }
             }
         }
-        Statement::ExportNamed { declaration } => {
-            let ExportNamedDecl::Function { body, .. } = declaration;
-            for s in body {
-                check_map_keys_in_stmt(s)?;
+        Statement::ExportNamed { declaration } => match declaration {
+            ExportNamedDecl::Function { body, .. } => {
+                for s in body {
+                    check_map_keys_in_stmt(s)?;
+                }
             }
-        }
+            ExportNamedDecl::Variable { declarations, .. } => {
+                for decl in declarations {
+                    if let Some(init) = &decl.init {
+                        check_map_keys_in_expr(init)?;
+                    }
+                }
+            }
+        },
         Statement::FunctionDecl { body, .. } => {
             for s in body {
                 check_map_keys_in_stmt(s)?;
@@ -653,6 +693,13 @@ fn check_undefined_variables(program: &Program) -> Result<(), RuntimeError> {
             } => {
                 scope.last_mut().unwrap().insert(id.clone());
             }
+            Statement::ExportNamed {
+                declaration: ExportNamedDecl::Variable { declarations, .. },
+            } => {
+                for decl in declarations {
+                    add_pattern_names(&decl.id, scope.last_mut().unwrap());
+                }
+            }
             Statement::ExportDefault { declaration } => {
                 if let ExportDefaultDecl::Function {
                     id: Some(name), ..
@@ -684,10 +731,17 @@ fn check_undefined_variables(program: &Program) -> Result<(), RuntimeError> {
                     check_function_scope(params, body, &mut scope)?;
                 }
             }
-            Statement::ExportNamed { declaration } => {
-                let ExportNamedDecl::Function { params, body, .. } = declaration;
-                check_function_scope(params, body, &mut scope)?;
-            }
+            Statement::ExportNamed { declaration } => match declaration {
+                ExportNamedDecl::Function { params, body, .. } => {
+                    check_function_scope(params, body, &mut scope)?;
+                }
+                ExportNamedDecl::Variable { declarations, .. } => {
+                    for decl in declarations {
+                        check_expr_refs(decl.init.as_deref(), &mut scope)?;
+                        add_pattern_names(&decl.id, scope.last_mut().unwrap());
+                    }
+                }
+            },
             Statement::FunctionDecl { params, body, .. } => {
                 check_function_scope(params, body, &mut scope)?;
             }

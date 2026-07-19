@@ -57,7 +57,8 @@ pub fn tip_cached_get(url: &str) -> Option<String> {
     Some(text)
 }
 
-/// Inject Array / JSON / Object / Date / Math / Number / parseInt / localStorage / undefined.
+/// Inject Array / JSON / Object / Date / Math / Number / parseInt / localStorage / undefined /
+/// document / setInterval.
 /// Entry hooks get this via [`run_hook_persistent`]; imported modules must call it too.
 ///
 /// Also mirrors JSON/Array/Object onto `globalThis` so `globalThis.JSON.parse` works
@@ -77,6 +78,9 @@ pub fn inject_standard_builtins(runtime: &Runtime) {
     env.set("Number", number_value());
     env.set("parseInt", Value::Native(parse_int_native));
     env.set("parseFloat", Value::Native(parse_float_native));
+    env.set("document", crate::dom_host::document_value());
+    env.set("setInterval", crate::dom_host::set_interval_value());
+    env.set("clearInterval", crate::dom_host::clear_interval_value());
 
     let mut gt = match env.get("globalThis") {
         Some(Value::Object(o)) => o,

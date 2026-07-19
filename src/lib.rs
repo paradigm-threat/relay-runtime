@@ -22,6 +22,7 @@ pub mod runtime;
 pub mod server_script;
 pub mod style_resolve;
 pub mod desktop_style;
+pub mod dom_host;
 pub mod value;
 pub mod vdom;
 

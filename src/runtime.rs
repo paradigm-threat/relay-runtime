@@ -969,64 +969,7 @@ impl Runtime {
                 kind,
                 declarations,
             } => {
-                let mutability = match kind {
-                    VarKind::Const => Mutability::Const,
-                    VarKind::Let => Mutability::Let,
-                    VarKind::Var => Mutability::Var,
-                };
-                for decl in declarations {
-                    let val = decl
-                        .init
-                        .as_ref()
-                        .map(|e| self.eval_expr(e))
-                        .transpose()?
-                        .unwrap_or(Value::Null);
-                    if let Pattern::Identifier { name, type_annotation } = &decl.id {
-                        let type_name = type_annotation.as_ref().map(|t| t.name.clone());
-                        self.env
-                            .borrow_mut()
-                            .set_with_mutability(name, val, mutability, type_name)
-                            .map_err(RuntimeError::Runtime)?;
-                    } else if let Pattern::Array { elements } = &decl.id {
-                        if let Value::Array(arr) = val {
-                            for (i, elem) in elements.iter().enumerate() {
-                                if let Some(Pattern::Identifier { name, .. }) = elem.as_ref() {
-                                    let v = arr.get(i).cloned().unwrap_or(Value::Null);
-                                    self.env
-                                        .borrow_mut()
-                                        .set_with_mutability(name, v, mutability, None)
-                                        .map_err(RuntimeError::Runtime)?;
-                                }
-                            }
-                        }
-                    } else if let Pattern::Object { properties } = &decl.id {
-                        let obj = match &val {
-                            Value::Object(o) => Some(o),
-                            _ => None,
-                        };
-                        for prop in properties {
-                            let bind_name = match &prop.value {
-                                Some(p) => match p.as_ref() {
-                                    Pattern::Identifier { name, .. } => name.as_str(),
-                                    _ => {
-                                        return Err(RuntimeError::Runtime(
-                                            "CleverScript: nested object destructuring not supported"
-                                                .to_string(),
-                                        ));
-                                    }
-                                },
-                                None => prop.key.as_str(),
-                            };
-                            let v = obj
-                                .and_then(|o| o.get(&prop.key).cloned())
-                                .unwrap_or(Value::Null);
-                            self.env
-                                .borrow_mut()
-                                .set_with_mutability(bind_name, v, mutability, None)
-                                .map_err(RuntimeError::Runtime)?;
-                        }
-                    }
-                }
+                self.bind_variable_decl(*kind, declarations)?;
             }
             Statement::Return { argument } => {
                 let val = argument
@@ -1924,6 +1867,77 @@ impl Runtime {
         Ok(())
     }
 
+    /// Bind a const/let/var declaration list into the current env.
+    fn bind_variable_decl(
+        &mut self,
+        kind: VarKind,
+        declarations: &[VariableDeclarator],
+    ) -> Result<(), RuntimeError> {
+        let mutability = match kind {
+            VarKind::Const => Mutability::Const,
+            VarKind::Let => Mutability::Let,
+            VarKind::Var => Mutability::Var,
+        };
+        for decl in declarations {
+            let val = decl
+                .init
+                .as_ref()
+                .map(|e| self.eval_expr(e))
+                .transpose()?
+                .unwrap_or(Value::Null);
+            if let Pattern::Identifier {
+                name,
+                type_annotation,
+            } = &decl.id
+            {
+                let type_name = type_annotation.as_ref().map(|t| t.name.clone());
+                self.env
+                    .borrow_mut()
+                    .set_with_mutability(name, val, mutability, type_name)
+                    .map_err(RuntimeError::Runtime)?;
+            } else if let Pattern::Array { elements } = &decl.id {
+                if let Value::Array(arr) = val {
+                    for (i, elem) in elements.iter().enumerate() {
+                        if let Some(Pattern::Identifier { name, .. }) = elem.as_ref() {
+                            let v = arr.get(i).cloned().unwrap_or(Value::Null);
+                            self.env
+                                .borrow_mut()
+                                .set_with_mutability(name, v, mutability, None)
+                                .map_err(RuntimeError::Runtime)?;
+                        }
+                    }
+                }
+            } else if let Pattern::Object { properties } = &decl.id {
+                let obj = match &val {
+                    Value::Object(o) => Some(o),
+                    _ => None,
+                };
+                for prop in properties {
+                    let bind_name = match &prop.value {
+                        Some(p) => match p.as_ref() {
+                            Pattern::Identifier { name, .. } => name.as_str(),
+                            _ => {
+                                return Err(RuntimeError::Runtime(
+                                    "CleverScript: nested object destructuring not supported"
+                                        .to_string(),
+                                ));
+                            }
+                        },
+                        None => prop.key.as_str(),
+                    };
+                    let v = obj
+                        .and_then(|o| o.get(&prop.key).cloned())
+                        .unwrap_or(Value::Null);
+                    self.env
+                        .borrow_mut()
+                        .set_with_mutability(bind_name, v, mutability, None)
+                        .map_err(RuntimeError::Runtime)?;
+                }
+            }
+        }
+        Ok(())
+    }
+
     /// Bind top-level `function name() {}` and `export function name() {}` into module env so hooks can use sibling helpers.
     fn process_top_level_functions(&mut self) {
         for stmt in &self.program.body {
@@ -1962,6 +1976,37 @@ impl Runtime {
         }
     }
 
+    /// Hoist functions, then evaluate top-level `const`/`let` and `export const`/`export let`.
+    fn process_module_toplevel(&mut self) -> Result<(), RuntimeError> {
+        self.process_top_level_functions();
+        // Clone decls first so we can mutably borrow self while evaluating.
+        let mut pending: Vec<(VarKind, Vec<VariableDeclarator>)> = Vec::new();
+        for stmt in &self.program.body {
+            match stmt {
+                Statement::VariableDecl {
+                    kind,
+                    declarations,
+                } => {
+                    pending.push((*kind, declarations.clone()));
+                }
+                Statement::ExportNamed {
+                    declaration:
+                        ExportNamedDecl::Variable {
+                            kind,
+                            declarations,
+                        },
+                } => {
+                    pending.push((*kind, declarations.clone()));
+                }
+                _ => {}
+            }
+        }
+        for (kind, declarations) in pending {
+            self.bind_variable_decl(kind, &declarations)?;
+        }
+        Ok(())
+    }
+
     fn run_default_export_body(&mut self, body: &[Statement]) -> Result<Value, RuntimeError> {
         let mut result = Value::Null;
         for s in body {
@@ -1989,7 +2034,7 @@ impl Runtime {
     /// Run the default export and return the result.
     pub fn run(&mut self) -> Result<Value, RuntimeError> {
         self.process_imports()?;
-        self.process_top_level_functions();
+        self.process_module_toplevel()?;
         let default_name = self
             .analysis
             .default_export
@@ -2062,35 +2107,80 @@ impl Runtime {
         Ok(exports)
     }
 
-    /// Get module exports (default + named export functions) without running the component.
+    /// Get module exports (default + named exports) without running the default component.
     /// Used by load_module when a hook does import(path).
     pub fn get_module_exports(&mut self) -> Result<Value, RuntimeError> {
         self.process_imports()?;
-        self.process_top_level_functions();
+        self.process_module_toplevel()?;
         let mut exports = HashMap::new();
 
         for stmt in &self.program.body {
-            if let Statement::ExportNamed {
-                declaration: ExportNamedDecl::Function { id, params, body },
-            } = stmt
-            {
-                let num_hooks = self
-                    .analysis
-                    .hook_calls
-                    .get(id)
-                    .map(|v| v.len())
-                    .unwrap_or(0);
-                exports.insert(
-                    id.clone(),
-                    Value::Function {
-                        params: params.clone(),
-                        body: body.clone(),
-                        env: self.env.clone(),
-                        is_async: false,
-                        component_hooks: if num_hooks > 0 { Some(num_hooks) } else { None },
-                        component_module_path: None,
-                    },
-                );
+            match stmt {
+                Statement::ExportNamed {
+                    declaration: ExportNamedDecl::Function { id, params, body },
+                } => {
+                    let num_hooks = self
+                        .analysis
+                        .hook_calls
+                        .get(id)
+                        .map(|v| v.len())
+                        .unwrap_or(0);
+                    exports.insert(
+                        id.clone(),
+                        Value::Function {
+                            params: params.clone(),
+                            body: body.clone(),
+                            env: self.env.clone(),
+                            is_async: false,
+                            component_hooks: if num_hooks > 0 { Some(num_hooks) } else { None },
+                            component_module_path: None,
+                        },
+                    );
+                }
+                Statement::ExportNamed {
+                    declaration:
+                        ExportNamedDecl::Variable {
+                            declarations, ..
+                        },
+                } => {
+                    for decl in declarations {
+                        if let Pattern::Identifier { name, .. } = &decl.id {
+                            if let Some(v) = self.env.borrow().get(name) {
+                                let v = if let Value::Function {
+                                    params,
+                                    body,
+                                    env,
+                                    is_async,
+                                    ..
+                                } = &v
+                                {
+                                    let num_hooks = self
+                                        .analysis
+                                        .hook_calls
+                                        .get(name)
+                                        .map(|h| h.len())
+                                        .unwrap_or(0);
+                                    Value::Function {
+                                        params: params.clone(),
+                                        body: body.clone(),
+                                        env: env.clone(),
+                                        is_async: *is_async,
+                                        component_hooks: if num_hooks > 0 {
+                                            Some(num_hooks)
+                                        } else {
+                                            None
+                                        },
+                                        component_module_path: None,
+                                    }
+                                } else {
+                                    v
+                                };
+                                exports.insert(name.clone(), v);
+                            }
+                        }
+                    }
+                }
+                _ => {}
             }
         }
 

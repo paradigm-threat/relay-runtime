@@ -233,9 +233,15 @@ fn parse_statement(stream: &mut TokenStream) -> Result<Statement, RuntimeError> 
                 parse_export_default(stream)
             } else if matches!(stream.peek(), Token::Keyword(Keyword::Function)) {
                 parse_export_named_function(stream)
+            } else if matches!(
+                stream.peek(),
+                Token::Keyword(Keyword::Const) | Token::Keyword(Keyword::Let)
+            ) {
+                parse_export_named_variable(stream)
             } else {
                 Err(stream.parse_error(
-                    "Expected `export default` or `export function`".to_string(),
+                    "Expected `export default`, `export function`, `export const`, or `export let`"
+                        .to_string(),
                 ))
             }
         }
@@ -366,6 +372,40 @@ fn parse_export_named_function(stream: &mut TokenStream) -> Result<Statement, Ru
     expect_token(stream, Token::RCurly)?;
     Ok(Statement::ExportNamed {
         declaration: ExportNamedDecl::Function { id, params, body },
+    })
+}
+
+fn parse_export_named_variable(stream: &mut TokenStream) -> Result<Statement, RuntimeError> {
+    let (tok, _) = stream.next();
+    let kind = match tok {
+        Token::Keyword(Keyword::Const) => VarKind::Const,
+        Token::Keyword(Keyword::Let) => VarKind::Let,
+        t => {
+            return Err(stream.parse_error(format!(
+                "Expected const/let after export, got {:?}",
+                t
+            )))
+        }
+    };
+    let mut declarations = Vec::new();
+    loop {
+        let id = parse_pattern(stream)?;
+        let init = if eat_token(stream, Token::Eq) {
+            Some(Box::new(parse_expression(stream)?))
+        } else {
+            None
+        };
+        declarations.push(VariableDeclarator { id, init });
+        if !eat_token(stream, Token::Comma) {
+            break;
+        }
+    }
+    expect_semicolon_optional(stream);
+    Ok(Statement::ExportNamed {
+        declaration: ExportNamedDecl::Variable {
+            kind,
+            declarations,
+        },
     })
 }
 

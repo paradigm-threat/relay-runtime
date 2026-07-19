@@ -254,12 +254,14 @@ When writing CleverScript for parked tips (SSR + hydrate):
 
 1. **Braces always** — `while` / `for` / `try` bodies must use `{ … }`. Single-statement bodies parse-error with a braces hint.
 2. **No reserved bindings** — `from`, `of`, `as`, `import`, etc. cannot be variable names (`const from = …` fails with a reserved-keyword message). Prefer `rootPrefix`, `needle`, …
-3. **Exports** — `export default` / `export function` only (no `export const`).
+3. **Exports** — `export default`, `export function`, **`export const`**, **`export let`**. Top-level `const`/`let` in a module are evaluated when the module loads (with function decls hoisted first).
 4. **Lone quote literals are OK in the runtime** — `'"'` and `"'"` round-trip; prefer them over ad-hoc concat when you need a quote char. Prefer longer safe forms (`"x'y".charAt(1)`) only if a host/tooling path mangles lone quotes.
 5. **Prefer literal `replaceAll` over host+path concat** for URL rewriting — concat has historically mangled tip paths under SSR.
 6. **Markdown custom tags** — pass `overrides={{ AutoIndex: Comp, … }}` to `MarkdownRenderer` so md2ast allows the tag and CleverScript renders the component. Without overrides, `<AutoIndex />` leaks as text. Nested `function` decls inside the component body are supported; module-level components are fine too.
 7. **Do not preprocess large markdown with fragile replaces** to fake MDX — use overrides instead.
 8. **JSX attribute expressions must evaluate** — failed `{expr}` props are errors (not silently dropped), so a bad `overrides={…}` surfaces instead of rendering without custom tags.
+9. **Avoid unary minus after `return`** — use `return 0 - 1` or `return (-1)`, not `return -1`.
+10. **Shared module state** — prefer `export const api = createApi()` where methods close over locals inside `createApi()` (works). Module-level `const` read from *nested* `function` bodies is unreliable; do not rely on that.
 
 ---
 
@@ -275,7 +277,7 @@ When writing CleverScript for parked tips (SSR + hydrate):
 | Switch | exclusive `switch`/`case` | fall-through |
 | Objects | identifier keys, destructuring, shallow spread | computed keys, prototype, `this` |
 | Arrays | `length`, `[i]`, `concat`/`map`/`filter`/`find`, spread | `push`, `pop`, mutable methods |
-| Modules | `export default`, `export function` | `arguments` |
+| Modules | `export default`, `export function`, `export const`, `export let` | `arguments` |
 | JSX | elements, fragments `<>`, `{expr}` | spread `{...props}` |
 | Markdown | `MarkdownRenderer` + `anchorProps` / `anchorOnClick` / **`overrides`** | full MDX expressions |
 

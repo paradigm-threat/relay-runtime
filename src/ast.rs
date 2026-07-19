@@ -73,7 +73,7 @@ pub struct SwitchCase {
     pub consequent: Vec<Statement>,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub enum VarKind {
     Const,
     Let,
@@ -139,6 +139,11 @@ pub enum ExportDefaultDecl {
 #[serde(tag = "type")]
 pub enum ExportNamedDecl {
     Function { id: String, params: Vec<Param>, body: Vec<Statement> },
+    /// `export const foo = …` / `export let foo = …` (and multi-declarator forms).
+    Variable {
+        kind: VarKind,
+        declarations: Vec<VariableDeclarator>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
