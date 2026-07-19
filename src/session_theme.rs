@@ -40,6 +40,7 @@ pub fn clear_session_theme() {
     SESSION_THEME_YAML.with(|c| c.borrow_mut().clear());
     LAST_UNRESOLVED_VNODE.with(|c| *c.borrow_mut() = None);
     FORCED_THEME_CSS.with(|c| c.borrow_mut().clear());
+    clear_client_live();
 }
 
 pub fn is_client_live() -> bool {
