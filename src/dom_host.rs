@@ -303,6 +303,26 @@ fn wrap_element(el: web_sys::Element) -> Value {
     style_bag.insert("overflow".to_string(), Value::String(String::new()));
     o.insert("style".to_string(), Value::Object(style_bag));
 
+    let id_rect = id;
+    o.insert(
+        "getBoundingClientRect".to_string(),
+        Value::NativeFn(NativeFnClosure(Rc::new(move |_args| {
+            DOM_NODES.with(|m| {
+                let map = m.borrow();
+                let el = map.get(&id_rect).ok_or("DomNode gone")?;
+                let r = el.get_bounding_client_rect();
+                let mut bag = HashMap::new();
+                bag.insert("top".to_string(), Value::Number(r.top()));
+                bag.insert("left".to_string(), Value::Number(r.left()));
+                bag.insert("bottom".to_string(), Value::Number(r.bottom()));
+                bag.insert("right".to_string(), Value::Number(r.right()));
+                bag.insert("width".to_string(), Value::Number(r.width()));
+                bag.insert("height".to_string(), Value::Number(r.height()));
+                Ok(Value::Object(bag))
+            })
+        }))),
+    );
+
     let id_scroll = id;
     o.insert(
         "scrollIntoView".to_string(),
