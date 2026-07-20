@@ -44,6 +44,14 @@ fn stub_document_value() -> Value {
         "createElement".to_string(),
         Value::Native(|_| Ok(Value::Null)),
     );
+    doc.insert(
+        "querySelector".to_string(),
+        Value::Native(|_| Ok(Value::Null)),
+    );
+    doc.insert(
+        "querySelectorAll".to_string(),
+        Value::Native(|_| Ok(Value::Array(vec![]))),
+    );
     doc.insert("documentElement".to_string(), Value::Null);
     doc.insert("body".to_string(), Value::Null);
     let mut loc = HashMap::new();
@@ -109,6 +117,58 @@ fn wasm_document_value() -> Value {
             Ok(wrap_element(el))
         }))),
     );
+    doc.insert(
+        "querySelector".to_string(),
+        Value::NativeFn(NativeFnClosure(Rc::new(|args| {
+            let sel = args
+                .first()
+                .and_then(|v| {
+                    if let Value::String(s) = v {
+                        Some(s.as_str())
+                    } else {
+                        None
+                    }
+                })
+                .ok_or("document.querySelector requires string")?;
+            let document = web_sys::window()
+                .and_then(|w| w.document())
+                .ok_or("document unavailable")?;
+            match document.query_selector(sel).map_err(|e| format!("{:?}", e))? {
+                Some(el) => Ok(wrap_element(el)),
+                None => Ok(Value::Null),
+            }
+        }))),
+    );
+    doc.insert(
+        "querySelectorAll".to_string(),
+        Value::NativeFn(NativeFnClosure(Rc::new(|args| {
+            let sel = args
+                .first()
+                .and_then(|v| {
+                    if let Value::String(s) = v {
+                        Some(s.as_str())
+                    } else {
+                        None
+                    }
+                })
+                .ok_or("document.querySelectorAll requires string")?;
+            let document = web_sys::window()
+                .and_then(|w| w.document())
+                .ok_or("document unavailable")?;
+            let list = document
+                .query_selector_all(sel)
+                .map_err(|e| format!("{:?}", e))?;
+            let mut out = Vec::new();
+            for i in 0..list.length() {
+                if let Some(node) = list.item(i) {
+                    if let Ok(el) = node.dyn_into::<web_sys::Element>() {
+                        out.push(wrap_element(el));
+                    }
+                }
+            }
+            Ok(Value::Array(out))
+        }))),
+    );
     if let Some(document) = web_sys::window().and_then(|w| w.document()) {
         if let Some(root) = document.document_element() {
             doc.insert("documentElement".to_string(), wrap_element(root));
@@ -137,6 +197,9 @@ fn wasm_document_value() -> Value {
 
 #[cfg(target_arch = "wasm32")]
 fn wrap_element(el: web_sys::Element) -> Value {
+    let text = el.text_content().unwrap_or_default();
+    let tag = el.tag_name();
+    let id_attr = el.id();
     let id = DOM_NEXT_ID.with(|c| {
         let n = c.get();
         c.set(n + 1);
@@ -149,6 +212,9 @@ fn wrap_element(el: web_sys::Element) -> Value {
     let mut o = HashMap::new();
     o.insert("__type".to_string(), Value::String("DomNode".into()));
     o.insert("__id".to_string(), Value::Number(id as f64));
+    o.insert("textContent".to_string(), Value::String(text));
+    o.insert("tagName".to_string(), Value::String(tag));
+    o.insert("id".to_string(), Value::String(id_attr));
 
     let id_set = id;
     o.insert(
@@ -236,6 +302,19 @@ fn wrap_element(el: web_sys::Element) -> Value {
     let mut style_bag = HashMap::new();
     style_bag.insert("overflow".to_string(), Value::String(String::new()));
     o.insert("style".to_string(), Value::Object(style_bag));
+
+    let id_scroll = id;
+    o.insert(
+        "scrollIntoView".to_string(),
+        Value::NativeFn(NativeFnClosure(Rc::new(move |_args| {
+            DOM_NODES.with(|m| {
+                let map = m.borrow();
+                let el = map.get(&id_scroll).ok_or("DomNode gone")?;
+                el.scroll_into_view();
+                Ok(Value::Null)
+            })
+        }))),
+    );
 
     Value::Object(o)
 }
