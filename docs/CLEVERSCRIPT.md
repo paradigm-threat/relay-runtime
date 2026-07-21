@@ -19,10 +19,10 @@ Top-level **`import { … } from '@relay/…'`**. The global **`Relay`** is **`n
 
 | Module | Exports (summary) |
 |--------|-------------------|
-| `@relay/util` | `sortBy`, `take`, `prop`, `omitUndefined` |
-| `@relay/path` | `basename`, `dirname`, `extname`, `join`, `split` |
+| `@relay/util` | `sortBy`, `take`, `prop`, `omitUndefined`, `slugify`, `uniqueId`, `includes` |
+| `@relay/path` | `basename`, `dirname`, `extname`, `join`, `split`, `normalizeRel`, `resolveRel`, `parentDir`, `siteHref`, `resolveEmbedSrc`, `resolveAssetUrl`, `rewriteMarkdownAssetUrls` |
 | `@relay/date` | `formatTiny` / `formatLong` / `formatFeed` / `sameDay` |
-| `@relay/catalog` | `parseNavIndexTxt`, `loadNavIndex`, `contentKind`, `buildDirTree`, `publishedFromBlogPath` |
+| `@relay/catalog` | `parseNavIndexTxt`, `loadNavIndex`, `contentKind`, `buildDirTree`, `publishedFromBlogPath`, `neighborPaths`, `isFeelingLuckyCandidate`, `pickFeelingLuckyPath` |
 | `@relay/ui` | `cachedGet`, `Link`, `RadioTabs`, `safeProps` / `omitUndefined` |
 | `@relay/tts` | `synthesize({ text, voiceId?, baseUrl?, endpoints? })` → data URL; `AudioPlayer` → `relay-audio-player` |
 

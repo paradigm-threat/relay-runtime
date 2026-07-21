@@ -55,13 +55,33 @@ fn date_from_and_iso() {
 #[test]
 fn relay_path_util_modules() {
     let src = r#"
-import { basename, join } from '@relay/path';
-import { take, sortBy } from '@relay/util';
+import { basename, join, normalizeRel, resolveRel, parentDir, siteHref, resolveAssetUrl, rewriteMarkdownAssetUrls } from '@relay/path';
+import { take, sortBy, slugify, uniqueId, includes } from '@relay/util';
 import { formatTiny } from '@relay/date';
+import { neighborPaths, isFeelingLuckyCandidate, pickFeelingLuckyPath } from '@relay/catalog';
 export default function App() {
   const rows = [{ path: 'b.md', _updated: '2020-01-01' }, { path: 'a.md', _updated: '2021-01-01' }];
   const sorted = sortBy(rows, '_updated', true);
-  return basename(join(['docs', 'x.md'])) + '|' + take(sorted, 1)[0].path + '|' + formatTiny('2026-07-18T00:00:00Z');
+  const used = ['intro'];
+  const uid = uniqueId('intro', used);
+  const nb = neighborPaths('b.md', [{ path: 'a.md' }, { path: 'b.md' }, { path: 'c.md' }]);
+  const lucky = pickFeelingLuckyPath([{ path: 'page.md' }, { path: 'blog/x.md' }], 1);
+  const md = rewriteMarkdownAssetUrls('![](./pic.png)', 'dir/a.md', 'https://mirror.example');
+  return basename(join(['docs', 'x.md']))
+    + '|' + take(sorted, 1)[0].path
+    + '|' + formatTiny('2026-07-18T00:00:00Z')
+    + '|' + slugify('Hello World')
+    + '|' + uid
+    + '|' + (includes(used, 'intro') ? 'y' : 'n')
+    + '|' + normalizeRel('/foo/bar.md')
+    + '|' + resolveRel('../z.md', 'dir/a.md', '')
+    + '|' + parentDir('dir/a.md')
+    + '|' + siteHref('https://park.example', '/x.md')
+    + '|' + resolveAssetUrl('./pic.png', 'dir/a.md', 'https://mirror.example')
+    + '|' + nb.prev + '>' + nb.next
+    + '|' + (isFeelingLuckyCandidate('blog/x.md') ? 'L' : 'n')
+    + '|' + lucky
+    + '|' + md;
 }
 "#;
     let program = parse(src).expect("parse");
@@ -110,6 +130,18 @@ export default function App() {
         Value::String(s) => {
             assert!(s.starts_with("x.md|a.md|"), "{s}");
             assert!(s.contains("Jul"), "{s}");
+            assert!(s.contains("|hello_world|"), "{s}");
+            assert!(s.contains("|intro_1|"), "{s}");
+            assert!(s.contains("|y|"), "{s}");
+            assert!(s.contains("|foo/bar.md|"), "{s}");
+            assert!(s.contains("|z.md|") || s.contains("|dir/z.md|"), "{s}");
+            assert!(s.contains("|dir|"), "{s}");
+            assert!(s.contains("https://park.example/x.md"), "{s}");
+            assert!(s.contains("https://mirror.example/dir/pic.png"), "{s}");
+            assert!(s.contains("|a.md>c.md|"), "{s}");
+            assert!(s.contains("|L|"), "{s}");
+            assert!(s.contains("|blog/x.md|"), "{s}");
+            assert!(s.contains("![](https://mirror.example/dir/pic.png)"), "{s}");
         }
         other => panic!("{other:?}"),
     }

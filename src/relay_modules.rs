@@ -112,6 +112,242 @@ pub fn path_join(parts: &[String]) -> String {
     out
 }
 
+/// Strip leading slashes; empty → `README.md` (tip article default).
+pub fn path_normalize_rel(path: &str) -> String {
+    let mut t = path.trim().to_string();
+    while t.starts_with('/') {
+        t = t[1..].to_string();
+    }
+    if t.is_empty() {
+        "README.md".into()
+    } else {
+        t
+    }
+}
+
+/// Resolve a markdown/href against the current article path (`a/b.md` + `../c.png` → `a/c.png`).
+/// Optional `base_url`: if `href` is absolute under that host, strip to a tip-relative path.
+pub fn path_resolve_rel(href: &str, current_rel: &str, base_url: &str) -> String {
+    let h = href.trim();
+    if h.is_empty() {
+        return path_normalize_rel(current_rel);
+    }
+    if h.starts_with("mailto:") || h.starts_with("tel:") || h.starts_with('#') {
+        return path_normalize_rel(current_rel);
+    }
+    if h.contains("://") {
+        let base = base_url.trim_end_matches('/');
+        if !base.is_empty() && h.starts_with(base) {
+            let mut rest = h[base.len()..].to_string();
+            while rest.starts_with('/') {
+                rest = rest[1..].to_string();
+            }
+            return path_normalize_rel(&rest);
+        }
+        return path_normalize_rel(h);
+    }
+    if h.starts_with('/') {
+        return path_normalize_rel(h);
+    }
+    let mut rel = h.to_string();
+    if rel.starts_with("./") {
+        rel = rel[2..].to_string();
+    }
+    let mut dir = path_normalize_rel(current_rel);
+    if let Some(i) = dir.rfind('/') {
+        dir = dir[..i].to_string();
+    } else {
+        dir.clear();
+    }
+    let mut segs: Vec<String> = if dir.is_empty() {
+        Vec::new()
+    } else {
+        dir.split('/').filter(|s| !s.is_empty()).map(|s| s.to_string()).collect()
+    };
+    for p in rel.split('/') {
+        if p.is_empty() || p == "." {
+            continue;
+        }
+        if p == ".." {
+            segs.pop();
+        } else {
+            segs.push(p.to_string());
+        }
+    }
+    path_normalize_rel(&path_join(&segs))
+}
+
+pub fn path_parent_dir(rel: &str) -> String {
+    let p = path_normalize_rel(rel);
+    match p.rfind('/') {
+        Some(i) if i > 0 => path_normalize_rel(&p[..i]),
+        _ => "README.md".into(),
+    }
+}
+
+/// Join park base URL with a site path (`base` + `/` + path). Absolute/`mailto`/`#` pass through.
+pub fn path_site_href(base: &str, path: &str) -> String {
+    let mut p = path.to_string();
+    if p.is_empty() {
+        p = "/".into();
+    }
+    if p.starts_with('#') || p.starts_with("mailto:") || p.starts_with("tel:") {
+        return p;
+    }
+    if p.contains("://") {
+        return p;
+    }
+    while p.starts_with('/') {
+        p = p[1..].to_string();
+    }
+    let b = base.trim_end_matches('/').to_string();
+    if b.is_empty() {
+        return format!("/{p}");
+    }
+    if p.is_empty() {
+        return format!("{b}/");
+    }
+    format!("{b}/{p}")
+}
+
+fn is_asset_ext(path: &str) -> bool {
+    let lower = path.to_lowercase();
+    let ext = path_extname(&lower);
+    matches!(
+        ext.as_str(),
+        ".png"
+            | ".jpg"
+            | ".jpeg"
+            | ".gif"
+            | ".webp"
+            | ".svg"
+            | ".pdf"
+            | ".json"
+            | ".txt"
+            | ".csv"
+            | ".mp4"
+            | ".webm"
+            | ".wav"
+            | ".mp3"
+    )
+}
+
+/// Resolve embed/img `src` to a tip-relative path (no host). Absolute http(s) returned unchanged.
+pub fn path_resolve_embed_src(src: &str, article_rel: &str) -> String {
+    let s = src.trim();
+    if s.is_empty() {
+        return String::new();
+    }
+    if s.starts_with("http://") || s.starts_with("https://") || s.starts_with("data:") {
+        return s.to_string();
+    }
+    let (path_part, query) = match s.split_once('?') {
+        Some((p, q)) => (p.to_string(), format!("?{q}")),
+        None => (s.to_string(), String::new()),
+    };
+    if path_part.starts_with('/') {
+        return format!("{}{}", path_normalize_rel(&path_part), query);
+    }
+    format!("{}{}", path_resolve_rel(&path_part, article_rel, ""), query)
+}
+
+/// Absolute URL for a binary/raster asset (GitLab Pages / mirror). Relative → mirror + resolved path.
+pub fn path_resolve_asset_url(src: &str, article_rel: &str, mirror_base: &str) -> String {
+    let s = src.trim();
+    if s.is_empty() {
+        return String::new();
+    }
+    if s.starts_with("http://") || s.starts_with("https://") || s.starts_with("data:") {
+        return s.to_string();
+    }
+    let rel = path_resolve_embed_src(s, article_rel);
+    if rel.is_empty() {
+        return String::new();
+    }
+    if rel.contains("://") {
+        return rel;
+    }
+    let mirror = mirror_base.trim_end_matches('/');
+    if mirror.is_empty() {
+        return format!("/{rel}");
+    }
+    format!("{mirror}/{rel}")
+}
+
+/// Rewrite relative asset URLs in markdown `](...)` and `src="..."` / `src='...'`.
+pub fn path_rewrite_markdown_asset_urls(md: &str, article_rel: &str, mirror_base: &str) -> String {
+    if md.is_empty() || mirror_base.trim().is_empty() {
+        return md.to_string();
+    }
+    let bytes = md.as_bytes();
+    let mut out = String::with_capacity(md.len() + 64);
+    let mut i = 0usize;
+    while i < bytes.len() {
+        // ](url)
+        if bytes[i] == b']' && i + 1 < bytes.len() && bytes[i + 1] == b'(' {
+            out.push(']');
+            out.push('(');
+            i += 2;
+            let start = i;
+            while i < bytes.len() && bytes[i] != b')' && bytes[i] != b'\n' {
+                i += 1;
+            }
+            let url = &md[start..i];
+            let rewritten = if should_rewrite_asset_url(url) {
+                path_resolve_asset_url(url, article_rel, mirror_base)
+            } else {
+                url.to_string()
+            };
+            out.push_str(&rewritten);
+            // `i` still at closing `)` / newline — next loop emits it.
+            continue;
+        }
+        // src="..." or src='...'
+        if i + 5 <= bytes.len()
+            && (bytes[i] == b's' || bytes[i] == b'S')
+            && md[i..].len() >= 5
+            && md[i..i + 4].eq_ignore_ascii_case("src=")
+        {
+            out.push_str(&md[i..i + 4]);
+            i += 4;
+            let quote = bytes.get(i).copied().unwrap_or(0);
+            if quote == b'"' || quote == b'\'' {
+                out.push(quote as char);
+                i += 1;
+                let start = i;
+                while i < bytes.len() && bytes[i] != quote && bytes[i] != b'\n' {
+                    i += 1;
+                }
+                let url = &md[start..i];
+                let rewritten = if should_rewrite_asset_url(url) {
+                    path_resolve_asset_url(url, article_rel, mirror_base)
+                } else {
+                    url.to_string()
+                };
+                out.push_str(&rewritten);
+                // `i` still at closing quote — next loop emits it.
+                continue;
+            }
+            // Unquoted src= — keep scanning from current `i`.
+        }
+        out.push(bytes[i] as char);
+        i += 1;
+    }
+    out
+}
+
+fn should_rewrite_asset_url(url: &str) -> bool {
+    let u = url.trim();
+    if u.is_empty() || u.starts_with('#') || u.starts_with("mailto:") || u.starts_with("tel:") {
+        return false;
+    }
+    if u.starts_with("http://") || u.starts_with("https://") || u.starts_with("data:") {
+        return false;
+    }
+    let path = u.split('?').next().unwrap_or(u);
+    is_asset_ext(path)
+}
+
 fn path_module() -> Value {
     let mut m = HashMap::new();
     m.insert(
@@ -153,6 +389,70 @@ fn path_module() -> Value {
                 }
             }
             Ok(Value::String(path_join(&parts)))
+        }),
+    );
+    m.insert(
+        "normalizeRel".into(),
+        Value::Native(|args| {
+            Ok(Value::String(path_normalize_rel(
+                &arg_str(args, 0).unwrap_or_default(),
+            )))
+        }),
+    );
+    m.insert(
+        "resolveRel".into(),
+        Value::Native(|args| {
+            Ok(Value::String(path_resolve_rel(
+                &arg_str(args, 0).unwrap_or_default(),
+                &arg_str(args, 1).unwrap_or_default(),
+                &arg_str(args, 2).unwrap_or_default(),
+            )))
+        }),
+    );
+    m.insert(
+        "parentDir".into(),
+        Value::Native(|args| {
+            Ok(Value::String(path_parent_dir(
+                &arg_str(args, 0).unwrap_or_default(),
+            )))
+        }),
+    );
+    m.insert(
+        "siteHref".into(),
+        Value::Native(|args| {
+            Ok(Value::String(path_site_href(
+                &arg_str(args, 0).unwrap_or_default(),
+                &arg_str(args, 1).unwrap_or_default(),
+            )))
+        }),
+    );
+    m.insert(
+        "resolveEmbedSrc".into(),
+        Value::Native(|args| {
+            Ok(Value::String(path_resolve_embed_src(
+                &arg_str(args, 0).unwrap_or_default(),
+                &arg_str(args, 1).unwrap_or_default(),
+            )))
+        }),
+    );
+    m.insert(
+        "resolveAssetUrl".into(),
+        Value::Native(|args| {
+            Ok(Value::String(path_resolve_asset_url(
+                &arg_str(args, 0).unwrap_or_default(),
+                &arg_str(args, 1).unwrap_or_default(),
+                &arg_str(args, 2).unwrap_or_default(),
+            )))
+        }),
+    );
+    m.insert(
+        "rewriteMarkdownAssetUrls".into(),
+        Value::Native(|args| {
+            Ok(Value::String(path_rewrite_markdown_asset_urls(
+                &arg_str(args, 0).unwrap_or_default(),
+                &arg_str(args, 1).unwrap_or_default(),
+                &arg_str(args, 2).unwrap_or_default(),
+            )))
         }),
     );
     named_exports(m)
@@ -276,6 +576,50 @@ fn date_module() -> Value {
 
 // --- util ---
 
+/// TOC / heading id: lowercase, spaces→`_`, keep `[a-z0-9_-]`.
+pub fn util_slugify(title: &str) -> String {
+    let s = title.to_lowercase();
+    let mut out = String::new();
+    for c in s.chars() {
+        if c.is_whitespace() {
+            if !out.is_empty() && !out.ends_with('_') {
+                out.push('_');
+            }
+        } else if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
+            out.push(c);
+        }
+    }
+    while out.ends_with('_') {
+        out.pop();
+    }
+    if out.is_empty() {
+        "section".into()
+    } else {
+        out
+    }
+}
+
+pub fn util_includes_str(arr: &[Value], item: &str) -> bool {
+    for v in arr {
+        if let Value::String(s) = v {
+            if s == item {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+pub fn util_unique_id(base: &str, used: &[Value]) -> String {
+    let mut id = base.to_string();
+    let mut n = 1u32;
+    while util_includes_str(used, &id) {
+        id = format!("{base}_{n}");
+        n += 1;
+    }
+    id
+}
+
 fn util_module() -> Value {
     let mut m = HashMap::new();
     m.insert(
@@ -335,6 +679,30 @@ fn util_module() -> Value {
                 }
             });
             Ok(Value::Array(arr))
+        }),
+    );
+    m.insert(
+        "slugify".into(),
+        Value::Native(|args| {
+            Ok(Value::String(util_slugify(
+                &arg_str(args, 0).unwrap_or_default(),
+            )))
+        }),
+    );
+    m.insert(
+        "includes".into(),
+        Value::Native(|args| {
+            let arr = arg_arr(args, 0).unwrap_or_default();
+            let item = arg_str(args, 1).unwrap_or_default();
+            Ok(Value::Bool(util_includes_str(&arr, &item)))
+        }),
+    );
+    m.insert(
+        "uniqueId".into(),
+        Value::Native(|args| {
+            let base = arg_str(args, 0).unwrap_or_default();
+            let used = arg_arr(args, 1).unwrap_or_default();
+            Ok(Value::String(util_unique_id(&base, &used)))
         }),
     );
     named_exports(m)
@@ -458,6 +826,80 @@ pub fn build_dir_tree(rows: &[Value]) -> Value {
     to_value("", root)
 }
 
+fn row_path_str(row: &Value) -> String {
+    match row {
+        Value::Object(o) => o
+            .get("path")
+            .and_then(|v| match v {
+                Value::String(s) => Some(s.clone()),
+                _ => None,
+            })
+            .unwrap_or_default(),
+        _ => String::new(),
+    }
+}
+
+pub fn catalog_neighbor_paths(current_rel: &str, rows: &[Value]) -> Value {
+    let cur = path_normalize_rel(current_rel);
+    let mut idx: i32 = -1;
+    for (i, row) in rows.iter().enumerate() {
+        if row_path_str(row) == cur {
+            idx = i as i32;
+            break;
+        }
+    }
+    let mut prev = String::new();
+    let mut next = String::new();
+    if idx > 0 {
+        prev = row_path_str(&rows[(idx - 1) as usize]);
+    }
+    if idx >= 0 {
+        let n = (idx + 1) as usize;
+        if n < rows.len() {
+            next = row_path_str(&rows[n]);
+        }
+    }
+    let mut o = HashMap::new();
+    o.insert("prev".into(), Value::String(prev));
+    o.insert("next".into(), Value::String(next));
+    Value::Object(o)
+}
+
+pub fn catalog_is_feeling_lucky_candidate(path: &str) -> bool {
+    if path.len() < 4 {
+        return false;
+    }
+    let lower = path.to_lowercase();
+    if !lower.ends_with(".md") {
+        return false;
+    }
+    if lower.contains(".auto.md") {
+        return false;
+    }
+    if path == "README.md" || path == "page.md" {
+        return false;
+    }
+    true
+}
+
+pub fn catalog_pick_feeling_lucky_path(rows: &[Value], seed: f64) -> String {
+    let mut candidates: Vec<String> = Vec::new();
+    for row in rows {
+        let p = row_path_str(row);
+        if catalog_is_feeling_lucky_candidate(&p) {
+            candidates.push(p);
+        }
+    }
+    if candidates.is_empty() {
+        return String::new();
+    }
+    let mut idx = seed.abs() as usize % candidates.len();
+    if idx >= candidates.len() {
+        idx = 0;
+    }
+    candidates[idx].clone()
+}
+
 fn catalog_module() -> Value {
     let mut m = HashMap::new();
     m.insert(
@@ -505,6 +947,30 @@ fn catalog_module() -> Value {
                 }
             }
             Ok(Value::Array(rows))
+        }),
+    );
+    m.insert(
+        "neighborPaths".into(),
+        Value::Native(|args| {
+            let cur = arg_str(args, 0).unwrap_or_default();
+            let rows = arg_arr(args, 1).unwrap_or_default();
+            Ok(catalog_neighbor_paths(&cur, &rows))
+        }),
+    );
+    m.insert(
+        "isFeelingLuckyCandidate".into(),
+        Value::Native(|args| {
+            Ok(Value::Bool(catalog_is_feeling_lucky_candidate(
+                &arg_str(args, 0).unwrap_or_default(),
+            )))
+        }),
+    );
+    m.insert(
+        "pickFeelingLuckyPath".into(),
+        Value::Native(|args| {
+            let rows = arg_arr(args, 0).unwrap_or_default();
+            let seed = arg_num(args, 1).unwrap_or(0.0);
+            Ok(Value::String(catalog_pick_feeling_lucky_path(&rows, seed)))
         }),
     );
     named_exports(m)
