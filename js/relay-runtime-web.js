@@ -1063,16 +1063,23 @@ export async function renderHook(container, options = {}) {
       const n = keyFromPath(k);
       if (n && n !== k) moduleMap[n] = text;
     };
-    for (const h of hooksManifest.hooks || []) {
-      if (!h || !h.path) continue;
-      const u = resolveHookUrl(baseDir, h.path) + cacheBust;
-      const resp = await fetch(u, { headers: branchHeaders });
-      if (resp.ok) {
-        putModule(h.path, await resp.text());
-      } else {
-        console.warn('[relay-runtime] remote hook fetch failed:', h.path, resp.status);
-      }
-    }
+    // Parallel prefetch (Android host already does this) — sequential await was ~N RTTs.
+    const hookEntries = (hooksManifest.hooks || []).filter((h) => h && h.path);
+    await Promise.all(
+      hookEntries.map(async (h) => {
+        const u = resolveHookUrl(baseDir, h.path) + cacheBust;
+        try {
+          const resp = await fetch(u, { headers: branchHeaders });
+          if (resp.ok) {
+            putModule(h.path, await resp.text());
+          } else {
+            console.warn('[relay-runtime] remote hook fetch failed:', h.path, resp.status);
+          }
+        } catch (err) {
+          console.warn('[relay-runtime] remote hook fetch error:', h.path, err);
+        }
+      }),
+    );
 
     effectivePath = keyFromPath(entryPath);
 
@@ -1323,15 +1330,22 @@ export async function bootstrap(options = {}) {
     const appSource = appResp.ok ? await appResp.text() : '';
 
     const moduleMap = {};
-    for (const h of manifest.hooks || []) {
-      const url = resolveUrl(baseUrl, h.path) + cacheBust;
-      const resp = await fetch(url);
-      if (resp.ok) {
-        moduleMap[h.path] = await resp.text();
-      } else {
-        console.warn('[relay-runtime] hook fetch failed:', resp.status, h.path, url);
-      }
-    }
+    const bootHooks = (manifest.hooks || []).filter((h) => h && h.path);
+    await Promise.all(
+      bootHooks.map(async (h) => {
+        const url = resolveUrl(baseUrl, h.path) + cacheBust;
+        try {
+          const resp = await fetch(url);
+          if (resp.ok) {
+            moduleMap[h.path] = await resp.text();
+          } else {
+            console.warn('[relay-runtime] hook fetch failed:', resp.status, h.path, url);
+          }
+        } catch (err) {
+          console.warn('[relay-runtime] hook fetch error:', h.path, err);
+        }
+      }),
+    );
 
     const hookCount = (manifest.hooks || []).length;
     const loadedCount = Object.keys(moduleMap).length;

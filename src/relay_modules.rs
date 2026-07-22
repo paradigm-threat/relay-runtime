@@ -900,6 +900,213 @@ pub fn catalog_pick_feeling_lucky_path(rows: &[Value], seed: f64) -> String {
     candidates[idx].clone()
 }
 
+/// ATX heading extract for TOC (host/OS-agnostic). Mirrors tip `extractMarkdownHeadings.js`.
+pub fn extract_markdown_headings(md: &str) -> Value {
+    const MAX_TOC: usize = 80;
+    let empty = || {
+        let mut o = HashMap::new();
+        o.insert("tocItems".into(), Value::Array(vec![]));
+        o.insert("idQueue".into(), Value::Array(vec![]));
+        Value::Object(o)
+    };
+    if md.is_empty() {
+        return empty();
+    }
+
+    fn skip_indent(line: &str) -> usize {
+        let mut i = 0usize;
+        let b = line.as_bytes();
+        while i < b.len() && i < 3 && b[i] == b' ' {
+            i += 1;
+        }
+        i
+    }
+
+    fn fence_marker(line: &str, start: usize) -> (char, usize) {
+        let b = line.as_bytes();
+        if start >= b.len() {
+            return ('\0', 0);
+        }
+        let ch = b[start] as char;
+        if ch != '`' && ch != '~' {
+            return ('\0', 0);
+        }
+        let mut count = 0usize;
+        let mut i = start;
+        while i < b.len() && b[i] as char == ch {
+            count += 1;
+            i += 1;
+        }
+        if count < 3 {
+            ('\0', 0)
+        } else {
+            (ch, count)
+        }
+    }
+
+    fn is_fence_open(line: &str) -> bool {
+        let start = skip_indent(line);
+        fence_marker(line, start).1 >= 3
+    }
+
+    fn closes_fence(line: &str, open_ch: char, open_count: usize) -> bool {
+        let start = skip_indent(line);
+        let (ch, count) = fence_marker(line, start);
+        if ch != open_ch || count < open_count {
+            return false;
+        }
+        let rest = &line[start + count..];
+        rest.chars().all(|c| c == ' ' || c == '\t')
+    }
+
+    fn strip_trailing_atx(title: &str) -> String {
+        let t = title.trim_end_matches([' ', '\t']);
+        let bytes = t.as_bytes();
+        let mut end = bytes.len();
+        while end > 0 && bytes[end - 1] == b'#' {
+            end -= 1;
+        }
+        if end < bytes.len() {
+            if end == 0 {
+                return String::new();
+            }
+            let prev = bytes[end - 1];
+            if prev == b' ' || prev == b'\t' {
+                return t[..end].trim_end_matches([' ', '\t']).to_string();
+            }
+        }
+        t.to_string()
+    }
+
+    fn parse_atx(line: &str) -> Option<(u32, String)> {
+        let start = skip_indent(line);
+        let b = line.as_bytes();
+        let mut i = start;
+        let mut level = 0u32;
+        while i < b.len() && level < 6 && b[i] == b'#' {
+            level += 1;
+            i += 1;
+        }
+        if level < 1 || i >= b.len() {
+            return None;
+        }
+        let after = b[i];
+        if after != b' ' && after != b'\t' {
+            return None;
+        }
+        while i < b.len() && (b[i] == b' ' || b[i] == b'\t') {
+            i += 1;
+        }
+        let title = strip_trailing_atx(line[i..].trim_start_matches([' ', '\t']));
+        let title = title.trim().to_string();
+        if title.is_empty() {
+            None
+        } else {
+            Some((level, title))
+        }
+    }
+
+    fn line_has_toc_ignore(line: &str) -> bool {
+        line.contains("data-toc-ignore") || line.contains("no-index")
+    }
+
+    fn line_html_close(line: &str) -> bool {
+        let t = line.trim_start_matches([' ', '\t']);
+        t.starts_with("</")
+    }
+
+    fn line_html_open_ignore(line: &str) -> bool {
+        let t = line.trim_start_matches([' ', '\t']);
+        if t.len() < 2 || !t.starts_with('<') || t.starts_with("</") {
+            return false;
+        }
+        line_has_toc_ignore(line)
+    }
+
+    fn heading_value(id: &str, title: &str, level: u32) -> Value {
+        let mut o = HashMap::new();
+        o.insert("id".into(), Value::String(id.into()));
+        o.insert("title".into(), Value::String(title.into()));
+        o.insert("level".into(), Value::Number(level as f64));
+        Value::Object(o)
+    }
+
+    let mut used: Vec<Value> = Vec::new();
+    let mut all: Vec<(String, String, u32, bool)> = Vec::new();
+    let mut in_fence = false;
+    let mut fence_ch = '\0';
+    let mut fence_count = 0usize;
+    let mut ignore_depth = 0i32;
+
+    for line in md.split('\n') {
+        let line = line.strip_suffix('\r').unwrap_or(line);
+        if in_fence {
+            if closes_fence(line, fence_ch, fence_count) {
+                in_fence = false;
+                fence_ch = '\0';
+                fence_count = 0;
+            }
+            continue;
+        }
+        if is_fence_open(line) {
+            let start = skip_indent(line);
+            let (ch, count) = fence_marker(line, start);
+            in_fence = true;
+            fence_ch = ch;
+            fence_count = count;
+            continue;
+        }
+
+        let mut skip_toc_region = false;
+        if ignore_depth > 0 {
+            skip_toc_region = true;
+            if line_html_close(line) {
+                ignore_depth -= 1;
+                if ignore_depth < 0 {
+                    ignore_depth = 0;
+                }
+            }
+        } else if line_html_open_ignore(line) {
+            ignore_depth += 1;
+            skip_toc_region = true;
+        }
+
+        if let Some((level, title)) = parse_atx(line) {
+            let base = util_slugify(&title);
+            let id = util_unique_id(&base, &used);
+            used.push(Value::String(id.clone()));
+            let skip_toc = skip_toc_region || line_has_toc_ignore(line);
+            all.push((id, title, level, skip_toc));
+        }
+    }
+
+    let mut start_idx = 0usize;
+    if all.len() > 1 && all[0].2 == 1 {
+        start_idx = 1;
+    }
+    let mut toc_items = Vec::new();
+    let mut n = 0usize;
+    for entry in all.iter().skip(start_idx) {
+        if n >= MAX_TOC {
+            break;
+        }
+        if entry.3 {
+            continue;
+        }
+        toc_items.push(heading_value(&entry.0, &entry.1, entry.2));
+        n += 1;
+    }
+    let id_queue: Vec<Value> = all
+        .iter()
+        .map(|e| heading_value(&e.0, &e.1, e.2))
+        .collect();
+
+    let mut out = HashMap::new();
+    out.insert("tocItems".into(), Value::Array(toc_items));
+    out.insert("idQueue".into(), Value::Array(id_queue));
+    Value::Object(out)
+}
+
 fn catalog_module() -> Value {
     let mut m = HashMap::new();
     m.insert(
@@ -908,6 +1115,14 @@ fn catalog_module() -> Value {
             Ok(Value::Array(parse_nav_index_txt(
                 &arg_str(args, 0).unwrap_or_default(),
             )))
+        }),
+    );
+    m.insert(
+        "extractMarkdownHeadings".into(),
+        Value::Native(|args| {
+            Ok(extract_markdown_headings(
+                &arg_str(args, 0).unwrap_or_default(),
+            ))
         }),
     );
     m.insert(
@@ -1331,5 +1546,61 @@ mod tests {
         assert_eq!(rows.len(), 1);
         assert_eq!(content_kind("blog/x.md"), "blog");
         assert!(!format_tiny("2026-07-18T12:00:00Z").is_empty());
+    }
+
+    #[test]
+    fn extract_headings_skips_fence_and_first_h1() {
+        let md = "# Title\n\n## Section One\n\n```\n# not\n```\n\n### Nested\n\n<div data-toc-ignore>\n\n## Hidden\n\n</div>\n\n## After\n";
+        let v = extract_markdown_headings(md);
+        let obj = match v {
+            Value::Object(o) => o,
+            _ => panic!("expected object"),
+        };
+        let toc = match obj.get("tocItems") {
+            Some(Value::Array(a)) => a,
+            _ => panic!("tocItems"),
+        };
+        let queue = match obj.get("idQueue") {
+            Some(Value::Array(a)) => a,
+            _ => panic!("idQueue"),
+        };
+        let toc_ids: Vec<String> = toc
+            .iter()
+            .filter_map(|h| match h {
+                Value::Object(o) => o.get("id").and_then(|x| match x {
+                    Value::String(s) => Some(s.clone()),
+                    _ => None,
+                }),
+                _ => None,
+            })
+            .collect();
+        let queue_ids: Vec<String> = queue
+            .iter()
+            .filter_map(|h| match h {
+                Value::Object(o) => o.get("id").and_then(|x| match x {
+                    Value::String(s) => Some(s.clone()),
+                    _ => None,
+                }),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            toc_ids,
+            vec![
+                "section_one".to_string(),
+                "nested".to_string(),
+                "after".to_string()
+            ]
+        );
+        assert_eq!(
+            queue_ids,
+            vec![
+                "title".to_string(),
+                "section_one".to_string(),
+                "nested".to_string(),
+                "hidden".to_string(),
+                "after".to_string()
+            ]
+        );
     }
 }
