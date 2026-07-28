@@ -3,7 +3,7 @@
 //! ## Platform behavior
 //!
 //! - **Web**: Keep `className` on elements; emit a real stylesheet via
-//!   `themed_styler::State::css_for_web_system` so SSR/no-JS browsers get media
+//!   `themed_styler::State::css_for_web` so SSR/no-JS browsers get media
 //!   queries, `:hover`, and `prefers-color-scheme`. Author `style={{…}}` stays
 //!   as inline style only.
 //! - **Android / iOS / Desktop**: Flat inline style resolution (no cascading).
@@ -40,7 +40,7 @@ impl Platform {
 }
 
 /// Build single-theme CSS for a forced appearance (JS theme toggle).
-/// Prefer this over `css_for_web_system` after `setCurrentTheme`.
+/// Prefer this over `css_for_web` after `setCurrentTheme`.
 pub fn css_for_forced_theme(theme_yaml: &str, theme_name: &str) -> String {
     let name = theme_name.trim().to_lowercase();
     if name.is_empty() {
@@ -88,7 +88,7 @@ pub fn resolve_vnode_styles(
     };
     let inject_css = match platform {
         Platform::Web => {
-            let css = state.css_for_web_system();
+            let css = state.css_for_web();
             if css.trim().is_empty() {
                 None
             } else {
