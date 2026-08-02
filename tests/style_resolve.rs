@@ -70,6 +70,82 @@ themes:
 current_theme: light
 "##;
 
+#[test]
+fn web_dual_theme_css_emits_html_dark_and_light_prefixes() {
+    let vnode = vnode_with_classname("div", "tone", vec![]);
+    let (_resolved, css, _) = resolve_vnode_styles(
+        vnode,
+        THEME_LIGHT_DARK,
+        Platform::Web,
+        1.0,
+        1.0,
+        Some("light"),
+        false,
+    );
+    let css = css.expect("web dual css");
+    assert!(
+        css.contains("html.dark") && css.contains("html.light"),
+        "css_for_web_system must force both html.dark and html.light: {css}"
+    );
+    assert!(
+        css.contains("prefers-color-scheme: dark"),
+        "system dual CSS must include prefers-color-scheme: {css}"
+    );
+    assert!(
+        css.contains("#111111") && css.contains("#eeeeee"),
+        "both theme colors must appear: {css}"
+    );
+}
+
+#[test]
+fn android_theme_name_selects_dark_flat_styles() {
+    let vnode = vnode_with_classname("div", "tone", vec![]);
+    let (light_vn, light_css, _) = resolve_vnode_styles(
+        vnode.clone(),
+        THEME_LIGHT_DARK,
+        Platform::Android,
+        1.0,
+        1.0,
+        Some("light"),
+        false,
+    );
+    let (dark_vn, dark_css, _) = resolve_vnode_styles(
+        vnode,
+        THEME_LIGHT_DARK,
+        Platform::Android,
+        1.0,
+        1.0,
+        Some("dark"),
+        true,
+    );
+    assert!(light_css.is_none(), "Android must not inject CSS sheets");
+    assert!(dark_css.is_none(), "Android must not inject CSS sheets");
+    let light_color = match &light_vn {
+        VNode::Element { props, .. } => props.get("style").and_then(|p| {
+            if let PropValue::Style(m) = p {
+                m.get("color").cloned()
+            } else {
+                None
+            }
+        }),
+        _ => None,
+    };
+    let dark_color = match &dark_vn {
+        VNode::Element { props, .. } => props.get("style").and_then(|p| {
+            if let PropValue::Style(m) = p {
+                m.get("color").cloned()
+            } else {
+                None
+            }
+        }),
+        _ => None,
+    };
+    assert_ne!(
+        light_color, dark_color,
+        "SetThemeAndRender path depends on theme_name flipping flat styles; light={light_color:?} dark={dark_color:?}"
+    );
+}
+
 fn vnode_with_classname(tag: &str, className: &str, children: Vec<VNode>) -> VNode {
     let mut props = HashMap::new();
     props.insert("className".to_string(), PropValue::String(className.to_string()));
