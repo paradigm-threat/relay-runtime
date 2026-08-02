@@ -264,6 +264,7 @@ When writing CleverScript for parked tips (SSR + hydrate):
 10. **Shared module state** — prefer `export const api = createApi()` where methods close over locals inside `createApi()` (works). Module-level `const` read from *nested* `function` bodies is unreliable; do not rely on that.
 11. **Park SSR tiers (normative tip doc)** — **P0** article + TOC and **P1** static chrome on SSR; **P2 catalog** (DirNav / ChangeLog / article lists) and **P3** interactive **forbidden** on SSR — placeholders until `isClientLive()`. Do **not** SSR catalog rows “with a better cache”: tip-OID HTML cache misses would reintroduce multi-second cold renders; same-Host QUERY during SSR deadlocks the gateway worker. Canon: park `hooks/CLEVERSCRIPT_TIP.md`.
 12. **Catalog warm on hydrate** — `@relay/catalog.loadNavIndex` uses request-local `tip_cached_get('/nav-index.txt')` + `tip_cached_nav_index_rows` (one parse per tip blob text per RunState session). Tip modules may module-warm sidecars (e.g. `changelog-thumbs.json`). Prefer that over per-component re-parse or SSR QUERY.
+13. **`html[data-pt-hydrated]`** — gateway SSR embed emits `"0"`; web glue (`syncHtmlHydratedAttr`) sets `"1"` when promoting `set_client_live(true)`. Tips style inactive chrome with `[data-pt-hydrated="0"] .pt-client-only` (keep nav links clickable). Naming stays `data-pt-*` alongside `data-pt-theme`.
 
 ---
 
