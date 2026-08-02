@@ -292,7 +292,7 @@ pub fn path_rewrite_markdown_asset_urls(md: &str, article_rel: &str, mirror_base
             while i < bytes.len() && bytes[i] != b')' && bytes[i] != b'\n' {
                 i += 1;
             }
-            let url = &md[start..i];
+            let url = std::str::from_utf8(&bytes[start..i]).unwrap_or("");
             let rewritten = if should_rewrite_asset_url(url) {
                 path_resolve_asset_url(url, article_rel, mirror_base)
             } else {
@@ -305,10 +305,11 @@ pub fn path_rewrite_markdown_asset_urls(md: &str, article_rel: &str, mirror_base
         // src="..." or src='...'
         if i + 5 <= bytes.len()
             && (bytes[i] == b's' || bytes[i] == b'S')
-            && md[i..].len() >= 5
-            && md[i..i + 4].eq_ignore_ascii_case("src=")
+            && std::str::from_utf8(&bytes[i..i + 4])
+                .map(|s| s.eq_ignore_ascii_case("src="))
+                .unwrap_or(false)
         {
-            out.push_str(&md[i..i + 4]);
+            out.push_str(std::str::from_utf8(&bytes[i..i + 4]).unwrap_or("src="));
             i += 4;
             let quote = bytes.get(i).copied().unwrap_or(0);
             if quote == b'"' || quote == b'\'' {
@@ -318,7 +319,7 @@ pub fn path_rewrite_markdown_asset_urls(md: &str, article_rel: &str, mirror_base
                 while i < bytes.len() && bytes[i] != quote && bytes[i] != b'\n' {
                     i += 1;
                 }
-                let url = &md[start..i];
+                let url = std::str::from_utf8(&bytes[start..i]).unwrap_or("");
                 let rewritten = if should_rewrite_asset_url(url) {
                     path_resolve_asset_url(url, article_rel, mirror_base)
                 } else {
@@ -330,8 +331,13 @@ pub fn path_rewrite_markdown_asset_urls(md: &str, article_rel: &str, mirror_base
             }
             // Unquoted src= — keep scanning from current `i`.
         }
-        out.push(bytes[i] as char);
-        i += 1;
+        // Emit one UTF-8 char (never slice mid-codepoint).
+        let ch = md[i..]
+            .chars()
+            .next()
+            .expect("i is in-bounds and at a char boundary");
+        out.push(ch);
+        i += ch.len_utf8();
     }
     out
 }
@@ -545,7 +551,10 @@ pub fn format_feed(iso: &str) -> String {
 }
 
 pub fn same_day(a: &str, b: &str) -> bool {
-    a.len() >= 10 && b.len() >= 10 && a[..10] == b[..10]
+    match (a.get(..10), b.get(..10)) {
+        (Some(da), Some(db)) => da == db,
+        _ => false,
+    }
 }
 
 fn date_module() -> Value {
@@ -1602,5 +1611,16 @@ mod tests {
                 "after".to_string()
             ]
         );
+    }
+
+    #[test]
+    fn rewrite_markdown_preserves_utf8_around_links() {
+        let md = "See [note — detail](./pic.png) and café src=\"x.jpg\" done";
+        let out = path_rewrite_markdown_asset_urls(md, "blog/post.md", "https://mirror.example");
+        assert!(out.contains('—'), "em dash must survive rewrite: {out}");
+        assert!(out.contains("café"), "utf8 text must survive: {out}");
+        assert!(out.contains("https://mirror.example/blog/pic.png"), "{out}");
+        assert!(same_day("2026-08-02T12:00:00Z", "2026-08-02T99:99:99Z"));
+        assert!(!same_day("短", "短abcdefghij")); // short / non-ascii prefix must not panic
     }
 }

@@ -2,7 +2,7 @@
 
 CleverScript is the JS-like language executed by **relay-runtime** for client hooks. It is intentionally a **small, well-specified subset** designed for JSX rendering—not full JavaScript. This document defines what is supported and what is explicitly out of scope.
 
-**Design principle:** Keep the surface small and predictable. Fail fast on unsupported constructs. Prefer host-provided APIs over runtime emulation.
+**Design principle:** Keep the surface small and predictable. Fail fast on unsupported constructs. Prefer host-provided APIs over runtime emulation. Tip CS is **routing/composition**; shared/heavy logic belongs in Rust `@relay/*` (see `relay-gateway/docs/CS_HOST_HELPERS.md`).
 
 ---
 
