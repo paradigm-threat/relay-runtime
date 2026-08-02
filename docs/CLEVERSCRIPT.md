@@ -262,6 +262,8 @@ When writing CleverScript for parked tips (SSR + hydrate):
 8. **JSX attribute expressions must evaluate** — failed `{expr}` props are errors (not silently dropped), so a bad `overrides={…}` surfaces instead of rendering without custom tags.
 9. **Avoid unary minus after `return`** — use `return 0 - 1` or `return (-1)`, not `return -1`.
 10. **Shared module state** — prefer `export const api = createApi()` where methods close over locals inside `createApi()` (works). Module-level `const` read from *nested* `function` bodies is unreliable; do not rely on that.
+11. **Park SSR tiers (normative tip doc)** — **P0** article + TOC and **P1** static chrome on SSR; **P2 catalog** (DirNav / ChangeLog / article lists) and **P3** interactive **forbidden** on SSR — placeholders until `isClientLive()`. Do **not** SSR catalog rows “with a better cache”: tip-OID HTML cache misses would reintroduce multi-second cold renders; same-Host QUERY during SSR deadlocks the gateway worker. Canon: park `hooks/CLEVERSCRIPT_TIP.md`.
+12. **Catalog warm on hydrate** — `@relay/catalog.loadNavIndex` uses request-local `tip_cached_get('/nav-index.txt')` + `tip_cached_nav_index_rows` (one parse per tip blob text per RunState session). Tip modules may module-warm sidecars (e.g. `changelog-thumbs.json`). Prefer that over per-component re-parse or SSR QUERY.
 
 ---
 
@@ -288,3 +290,7 @@ When writing CleverScript for parked tips (SSR + hydrate):
 - [POLICY.md](POLICY.md) — no legacy, no transpiler
 - [PLAN.md](PLAN.md) — strategy and language philosophy
 - [WEB_WASM_HOST.md](WEB_WASM_HOST.md) — web embedding
+- Park tip tiers / catalog SSR anti-pattern: tip `hooks/CLEVERSCRIPT_TIP.md`
+- Gateway SSR HTML cache: `relay-gateway/docs/RELAY_POLICY_AND_PERFORMANCE.md`
+
+*Last updated: 2026-08-02*
