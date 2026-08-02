@@ -29,11 +29,28 @@ thread_local! {
     pub(crate) static HOST_FOR_LAZY: RefCell<Option<HostHandle>> = RefCell::new(None);
     /// Request-local tip blob GET cache (`@relay/ui` cachedGet / `@relay/catalog` loadNavIndex).
     static TIP_GET_CACHE: RefCell<HashMap<String, String>> = RefCell::new(HashMap::new());
+    /// Parsed `nav-index.txt` rows keyed by text hash (warm across loadNavIndex callers / remounts).
+    static NAV_INDEX_PARSED: RefCell<Option<(u64, std::rc::Rc<Vec<Value>>)>> =
+        RefCell::new(None);
 }
 
 /// Clear tip GET cache (called with [`clear_run_state`]).
 pub fn clear_tip_get_cache() {
     TIP_GET_CACHE.with(|c| c.borrow_mut().clear());
+    clear_nav_index_parsed_cache();
+}
+
+/// Drop warmed nav-index parse (also via [`clear_tip_get_cache`]).
+pub fn clear_nav_index_parsed_cache() {
+    NAV_INDEX_PARSED.with(|c| *c.borrow_mut() = None);
+}
+
+fn hash_tip_text(s: &str) -> u64 {
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+    let mut h = DefaultHasher::new();
+    s.hash(&mut h);
+    h.finish()
 }
 
 /// Cached tip `fetch(url)` text body (null→empty). Used by `@relay/*` catalog/ui helpers.
@@ -55,6 +72,21 @@ pub fn tip_cached_get(url: &str) -> Option<String> {
         c.borrow_mut().insert(key, text.clone());
     });
     Some(text)
+}
+
+/// Parse `/nav-index.txt` once per distinct tip blob text within a RunState session.
+pub fn tip_cached_nav_index_rows(text: &str) -> std::rc::Rc<Vec<Value>> {
+    let h = hash_tip_text(text);
+    NAV_INDEX_PARSED.with(|c| {
+        if let Some((prev, rows)) = c.borrow().as_ref() {
+            if *prev == h {
+                return rows.clone();
+            }
+        }
+        let parsed = std::rc::Rc::new(crate::relay_modules::parse_nav_index_txt(text));
+        *c.borrow_mut() = Some((h, parsed.clone()));
+        parsed
+    })
 }
 
 /// Inject Array / JSON / Object / Date / Math / Number / parseInt / localStorage / undefined /

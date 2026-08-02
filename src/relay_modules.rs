@@ -2,6 +2,7 @@
 //! Pure helpers register on every Host; catalog IO uses `fetch` (SSR maps to git).
 
 use crate::run_state::tip_cached_get;
+use crate::run_state::tip_cached_nav_index_rows;
 use crate::value::Value;
 use std::collections::HashMap;
 
@@ -1162,8 +1163,10 @@ fn catalog_module() -> Value {
         Value::Native(|args| {
             let limit = arg_num(args, 0).unwrap_or(0.0);
             // Relative tip blob — SSR RepoFetchHost maps to git; CSR uses network.
+            // Text + parsed rows are warmed for the RunState session (DirNav/ChangeLog share).
             let text = tip_cached_get("/nav-index.txt").unwrap_or_default();
-            let mut rows = parse_nav_index_txt(&text);
+            let warmed = tip_cached_nav_index_rows(&text);
+            let mut rows: Vec<Value> = (*warmed).clone();
             if limit > 0.0 {
                 let n = limit as usize;
                 if rows.len() > n {

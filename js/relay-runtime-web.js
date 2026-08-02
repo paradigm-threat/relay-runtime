@@ -43,9 +43,32 @@ function applyInjectedCss() {
   syncHtmlThemeClass();
 }
 
-/** Mirror CleverScript/WASM theme name onto <html class="light|dark"> for system dual CSS. */
+/**
+ * Mirror CleverScript/WASM theme name onto <html class="light|dark"> for system dual CSS.
+ * Park tips that flip appearance without setCurrentTheme store the choice on
+ * data-pt-theme — prefer that so catalog remounts do not force theme.yaml light.
+ */
 function syncHtmlThemeClass() {
   if (typeof document === 'undefined') return;
+  const root = document.documentElement;
+  let tip = '';
+  try {
+    tip = String(root.getAttribute('data-pt-theme') || '').trim();
+  } catch (_) {
+    tip = '';
+  }
+  if (tip === 'light' || tip === 'dark') {
+    try {
+      root.setAttribute('class', tip);
+    } catch (_) {
+      /* classList optional */
+      try {
+        root.classList.remove('light', 'dark');
+        root.classList.add(tip);
+      } catch (_2) { /* ignore */ }
+    }
+    return;
+  }
   let name = '';
   try {
     if (typeof get_current_theme_name === 'function') {
@@ -55,7 +78,6 @@ function syncHtmlThemeClass() {
     return;
   }
   if (name !== 'light' && name !== 'dark') return;
-  const root = document.documentElement;
   root.classList.remove('light', 'dark');
   root.classList.add(name);
 }

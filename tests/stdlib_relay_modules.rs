@@ -160,3 +160,18 @@ fn tip_cached_get_dedupes_fetch() {
     set_host_for_lazy(None);
     clear_tip_get_cache();
 }
+
+#[test]
+fn tip_cached_nav_index_rows_warms_parse() {
+    use relay_runtime::tip_cached_nav_index_rows;
+    clear_tip_get_cache();
+    let text = "blog/a.md\tHello\t2026-01-01T00:00:00Z\nblog/b.md\tWorld\t2026-01-02T00:00:00Z\n";
+    let a = tip_cached_nav_index_rows(text);
+    let b = tip_cached_nav_index_rows(text);
+    assert!(std::rc::Rc::ptr_eq(&a, &b), "expected same warmed Rc");
+    assert_eq!(a.len(), 2);
+    clear_tip_get_cache();
+    let c = tip_cached_nav_index_rows(text);
+    assert!(!std::rc::Rc::ptr_eq(&a, &c), "cache clear should re-parse");
+    assert_eq!(c.len(), 2);
+}
