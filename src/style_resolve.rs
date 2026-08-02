@@ -3,8 +3,9 @@
 //! ## Platform behavior
 //!
 //! - **Web**: Keep `className` on elements; emit a real stylesheet via
-//!   `themed_styler::State::css_for_web` so SSR/no-JS browsers get media
-//!   queries, `:hover`, and `prefers-color-scheme`. Author `style={{…}}` stays
+//!   `themed_styler::State::css_for_web_system` so SSR/no-JS browsers get media
+//!   queries, `:hover`, `prefers-color-scheme`, and `html.dark` / `html.light`
+//!   forced overrides (class-only theme toggle). Author `style={{…}}` stays
 //!   as inline style only.
 //! - **Android / iOS / Desktop**: Flat inline style resolution (no cascading).
 //!   Platform glue only **applies** pre-resolved style props.
@@ -88,7 +89,10 @@ pub fn resolve_vnode_styles(
     };
     let inject_css = match platform {
         Platform::Web => {
-            let css = state.css_for_web();
+            // Dual light+dark sheet (html.dark / html.light + prefers-color-scheme)
+            // so tip chrome can flip theme via documentElement class without
+            // setCurrentTheme / full CleverScript re-render.
+            let css = state.css_for_web_system();
             if css.trim().is_empty() {
                 None
             } else {
