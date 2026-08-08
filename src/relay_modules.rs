@@ -316,6 +316,131 @@ pub fn path_portrait_sibling_src(src: &str) -> String {
     out
 }
 
+/// Strip scheme/host and query → repo-relative path (`governance/war/foo.png`).
+pub fn path_repo_rel_from_media_src(src: &str) -> String {
+    let no_query = src.split('?').next().unwrap_or(src);
+    let path = if no_query.starts_with("http://") || no_query.starts_with("https://") {
+        let rest = no_query
+            .split_once("://")
+            .map(|(_, r)| r)
+            .unwrap_or(no_query);
+        rest.find('/').map(|i| &rest[i..]).unwrap_or("/")
+    } else {
+        no_query
+    };
+    path.trim_start_matches('/').to_string()
+}
+
+/// DOM id for gallery anchors: `img-` + alnum, other chars → `-`.
+pub fn path_safe_img_dom_id(src: &str) -> String {
+    if src.is_empty() {
+        return "img-unknown".into();
+    }
+    let mut out = String::from("img-");
+    for c in src.chars() {
+        if c.is_ascii_alphanumeric() {
+            out.push(c);
+        } else {
+            out.push('-');
+        }
+    }
+    out
+}
+
+/// Parse `location.hash` (`#img=…` or `img=…`) → image src (may be absolute URL).
+pub fn path_read_hash_img_src(hash: &str) -> String {
+    let h = hash.trim();
+    if let Some(rest) = h.strip_prefix("#img=") {
+        return rest.to_string();
+    }
+    if let Some(rest) = h.strip_prefix("img=") {
+        return rest.to_string();
+    }
+    String::new()
+}
+
+/// Value for `location.hash = …` (no leading `#`; browser adds it).
+pub fn path_gallery_img_hash(src: &str) -> String {
+    if src.is_empty() {
+        return String::new();
+    }
+    format!("img={src}")
+}
+
+/// Prefer `highResSrc` when present; else `src`.
+pub fn path_gallery_display_src(src: &str, high_res_src: &str) -> String {
+    if !high_res_src.is_empty() {
+        return high_res_src.to_string();
+    }
+    src.to_string()
+}
+
+/// Invent portrait sibling URL only when `map[repoRel] === true`.
+pub fn path_portrait_sibling_if_present(src: &str, map: &Value) -> String {
+    let cand = path_portrait_sibling_src(src);
+    if cand.is_empty() {
+        return String::new();
+    }
+    let rel = path_repo_rel_from_media_src(&cand);
+    if rel.is_empty() {
+        return String::new();
+    }
+    let Value::Object(o) = map else {
+        return String::new();
+    };
+    match o.get(&rel) {
+        Some(Value::Bool(true)) => cand,
+        Some(Value::Number(n)) if *n == 1.0 => cand,
+        Some(Value::String(s)) if s == "true" || s == "1" => cand,
+        _ => String::new(),
+    }
+}
+
+/// Split text on `.` `!` `?` into trimmed sentences (TTS chunking).
+pub fn util_split_sentences(text: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut cur = String::new();
+    for c in text.chars() {
+        cur.push(c);
+        if c == '.' || c == '!' || c == '?' {
+            let t = cur.trim();
+            if !t.is_empty() {
+                out.push(t.to_string());
+            }
+            cur.clear();
+        }
+    }
+    let tail = cur.trim();
+    if !tail.is_empty() {
+        out.push(tail.to_string());
+    }
+    out
+}
+
+/// Pack sentences from `start` until `max_chars` (char count soft bound, tip TTS dock).
+/// Returns `(chunk_text, next_index)`.
+pub fn util_take_sentence_chunk(sentences: &[String], start: usize, max_chars: usize) -> (String, usize) {
+    let mut out = String::new();
+    let mut i = start;
+    while i < sentences.len() {
+        let next = &sentences[i];
+        let out_len = out.chars().count();
+        let next_len = next.chars().count();
+        if !out.is_empty() && out_len + next_len + 1 > max_chars {
+            break;
+        }
+        if !out.is_empty() {
+            out.push(' ');
+        }
+        out.push_str(next);
+        i += 1;
+        if out.chars().count() >= max_chars {
+            break;
+        }
+    }
+    (out, i)
+}
+
 /// Rewrite relative asset URLs in markdown `](...)` and `src="..."` / `src='...'`.
 pub fn path_rewrite_markdown_asset_urls(md: &str, article_rel: &str, mirror_base: &str) -> String {
     if md.is_empty() || mirror_base.trim().is_empty() {
@@ -509,6 +634,55 @@ fn path_module() -> Value {
             Ok(Value::String(path_portrait_sibling_src(
                 &arg_str(args, 0).unwrap_or_default(),
             )))
+        }),
+    );
+    m.insert(
+        "repoRelFromMediaSrc".into(),
+        Value::Native(|args| {
+            Ok(Value::String(path_repo_rel_from_media_src(
+                &arg_str(args, 0).unwrap_or_default(),
+            )))
+        }),
+    );
+    m.insert(
+        "safeImgDomId".into(),
+        Value::Native(|args| {
+            Ok(Value::String(path_safe_img_dom_id(
+                &arg_str(args, 0).unwrap_or_default(),
+            )))
+        }),
+    );
+    m.insert(
+        "readHashImgSrc".into(),
+        Value::Native(|args| {
+            Ok(Value::String(path_read_hash_img_src(
+                &arg_str(args, 0).unwrap_or_default(),
+            )))
+        }),
+    );
+    m.insert(
+        "galleryImgHash".into(),
+        Value::Native(|args| {
+            Ok(Value::String(path_gallery_img_hash(
+                &arg_str(args, 0).unwrap_or_default(),
+            )))
+        }),
+    );
+    m.insert(
+        "galleryDisplaySrc".into(),
+        Value::Native(|args| {
+            Ok(Value::String(path_gallery_display_src(
+                &arg_str(args, 0).unwrap_or_default(),
+                &arg_str(args, 1).unwrap_or_default(),
+            )))
+        }),
+    );
+    m.insert(
+        "portraitSiblingIfPresent".into(),
+        Value::Native(|args| {
+            let src = arg_str(args, 0).unwrap_or_default();
+            let map = args.get(1).cloned().unwrap_or(Value::Null);
+            Ok(Value::String(path_portrait_sibling_if_present(&src, &map)))
         }),
     );
     named_exports(m)
@@ -762,6 +936,36 @@ fn util_module() -> Value {
             let base = arg_str(args, 0).unwrap_or_default();
             let used = arg_arr(args, 1).unwrap_or_default();
             Ok(Value::String(util_unique_id(&base, &used)))
+        }),
+    );
+    m.insert(
+        "splitSentences".into(),
+        Value::Native(|args| {
+            let parts = util_split_sentences(&arg_str(args, 0).unwrap_or_default());
+            Ok(Value::Array(
+                parts.into_iter().map(Value::String).collect(),
+            ))
+        }),
+    );
+    m.insert(
+        "takeSentenceChunk".into(),
+        Value::Native(|args| {
+            let raw = arg_arr(args, 0).unwrap_or_default();
+            let sentences: Vec<String> = raw
+                .iter()
+                .map(|v| match v {
+                    Value::String(s) => s.clone(),
+                    _ => String::new(),
+                })
+                .collect();
+            let start = arg_num(args, 1).unwrap_or(0.0).max(0.0) as usize;
+            let max_chars = arg_num(args, 2).unwrap_or(0.0).max(0.0) as usize;
+            let (chunk, next) = util_take_sentence_chunk(&sentences, start, max_chars);
+            let mut out = HashMap::new();
+            out.insert("text".into(), Value::String(chunk));
+            // Tip TTS dock reads `.next` (sentence index after this chunk).
+            out.insert("next".into(), Value::Number(next as f64));
+            Ok(Value::Object(out))
         }),
     );
     named_exports(m)
@@ -1674,5 +1878,61 @@ mod tests {
         assert!(out.contains("https://mirror.example/blog/pic.png"), "{out}");
         assert!(same_day("2026-08-02T12:00:00Z", "2026-08-02T99:99:99Z"));
         assert!(!same_day("短", "短abcdefghij")); // short / non-ascii prefix must not panic
+    }
+
+    #[test]
+    fn gallery_path_and_portrait_index_helpers() {
+        assert_eq!(
+            path_repo_rel_from_media_src("https://ex.ample/governance/war/a.png?w=1"),
+            "governance/war/a.png"
+        );
+        assert_eq!(
+            path_repo_rel_from_media_src("/governance/war/a.png"),
+            "governance/war/a.png"
+        );
+        assert_eq!(path_safe_img_dom_id(""), "img-unknown");
+        assert_eq!(
+            path_safe_img_dom_id("/a/b.png"),
+            "img--a-b-png"
+        );
+        assert_eq!(path_read_hash_img_src("#img=/x.png"), "/x.png");
+        assert_eq!(path_read_hash_img_src("img=/x.png"), "/x.png");
+        assert_eq!(path_gallery_img_hash("/x.png"), "img=/x.png");
+        assert_eq!(
+            path_gallery_display_src("/lo.png", "/hi.png"),
+            "/hi.png"
+        );
+        assert_eq!(path_gallery_display_src("/lo.png", ""), "/lo.png");
+
+        let mut map = HashMap::new();
+        map.insert(
+            "governance/war/a-portrait.png".into(),
+            Value::Bool(true),
+        );
+        let present = path_portrait_sibling_if_present(
+            "/governance/war/a.png",
+            &Value::Object(map),
+        );
+        assert_eq!(present, "/governance/war/a-portrait.png");
+        assert_eq!(
+            path_portrait_sibling_if_present("/governance/war/a.png", &Value::Null),
+            ""
+        );
+        assert_eq!(
+            path_portrait_sibling_if_present("/governance/war/a-portrait.png", &Value::Object(HashMap::new())),
+            ""
+        );
+    }
+
+    #[test]
+    fn util_sentence_chunking_matches_tip_tts() {
+        let parts = util_split_sentences("One. Two! Three? Tail");
+        assert_eq!(parts, vec!["One.", "Two!", "Three?", "Tail"]);
+        let (chunk, next) = util_take_sentence_chunk(&parts, 0, 12);
+        assert_eq!(chunk, "One. Two!");
+        assert_eq!(next, 2);
+        let (chunk2, next2) = util_take_sentence_chunk(&parts, next, 700);
+        assert_eq!(chunk2, "Three? Tail");
+        assert_eq!(next2, 4);
     }
 }

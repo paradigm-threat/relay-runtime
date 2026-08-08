@@ -55,8 +55,8 @@ fn date_from_and_iso() {
 #[test]
 fn relay_path_util_modules() {
     let src = r#"
-import { basename, join, normalizeRel, resolveRel, parentDir, siteHref, resolveAssetUrl, rewriteMarkdownAssetUrls, portraitSiblingSrc } from '@relay/path';
-import { take, sortBy, slugify, uniqueId, includes } from '@relay/util';
+import { basename, join, normalizeRel, resolveRel, parentDir, siteHref, resolveAssetUrl, rewriteMarkdownAssetUrls, portraitSiblingSrc, repoRelFromMediaSrc, safeImgDomId, readHashImgSrc, galleryImgHash, galleryDisplaySrc, portraitSiblingIfPresent } from '@relay/path';
+import { take, sortBy, slugify, uniqueId, includes, splitSentences, takeSentenceChunk } from '@relay/util';
 import { formatTiny } from '@relay/date';
 import { neighborPaths, isFeelingLuckyCandidate, pickFeelingLuckyPath } from '@relay/catalog';
 export default function App() {
@@ -67,6 +67,9 @@ export default function App() {
   const nb = neighborPaths('b.md', [{ path: 'a.md' }, { path: 'b.md' }, { path: 'c.md' }]);
   const lucky = pickFeelingLuckyPath([{ path: 'page.md' }, { path: 'blog/x.md' }], 1);
   const md = rewriteMarkdownAssetUrls('![](./pic.png)', 'dir/a.md', 'https://mirror.example');
+  const map = { yes: true };
+  const sents = splitSentences('Hi. Bye!');
+  const chunk = takeSentenceChunk(sents, 0, 20);
   return basename(join(['docs', 'x.md']))
     + '|' + take(sorted, 1)[0].path
     + '|' + formatTiny('2026-07-18T00:00:00Z')
@@ -83,7 +86,16 @@ export default function App() {
     + '|' + lucky
     + '|' + md
     + '|' + portraitSiblingSrc('/a/b.png?w=800')
-    + '|' + portraitSiblingSrc('/a/b-portrait.png');
+    + '|' + portraitSiblingSrc('/a/b-portrait.png')
+    + '|' + repoRelFromMediaSrc('https://ex/a/b.png?x=1')
+    + '|' + safeImgDomId('/a.png')
+    + '|' + readHashImgSrc('#img=/z.png')
+    + '|' + galleryImgHash('/z.png')
+    + '|' + galleryDisplaySrc('/lo.png', '/hi.png')
+    + '|' + portraitSiblingIfPresent('/a/b.png', map)
+    + '|' + sents.length
+    + '|' + chunk.text
+    + '|' + chunk.next;
 }
 "#;
     let program = parse(src).expect("parse");
@@ -145,7 +157,11 @@ export default function App() {
             assert!(s.contains("|blog/x.md|"), "{s}");
             assert!(s.contains("![](https://mirror.example/dir/pic.png)"), "{s}");
             assert!(s.contains("|/a/b-portrait.png?w=800|"), "{s}");
-            assert!(s.ends_with('|'), "{s}"); // empty portraitSiblingSrc for already-portrait
+            assert!(s.contains("|a/b.png|"), "{s}");
+            assert!(s.contains("|img--a-png|"), "{s}");
+            assert!(s.contains("|/z.png|img=/z.png|/hi.png|"), "{s}");
+            // map has no matching repo-rel key → empty invent (positive case is unit-tested)
+            assert!(s.contains("|/hi.png||2|Hi. Bye!|2"), "{s}");
         }
         other => panic!("{other:?}"),
     }
