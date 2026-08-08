@@ -20,7 +20,7 @@ Top-level **`import { … } from '@relay/…'`**. The global **`Relay`** is **`n
 | Module | Exports (summary) |
 |--------|-------------------|
 | `@relay/util` | `sortBy`, `take`, `prop`, `omitUndefined`, `slugify`, `uniqueId`, `includes` |
-| `@relay/path` | `basename`, `dirname`, `extname`, `join`, `split`, `normalizeRel`, `resolveRel`, `parentDir`, `siteHref`, `resolveEmbedSrc`, `resolveAssetUrl`, `rewriteMarkdownAssetUrls` |
+| `@relay/path` | `basename`, `dirname`, `extname`, `join`, `split`, `normalizeRel`, `resolveRel`, `parentDir`, `siteHref`, `resolveEmbedSrc`, `resolveAssetUrl`, `rewriteMarkdownAssetUrls`, `portraitSiblingSrc` |
 | `@relay/date` | `formatTiny` / `formatLong` / `formatFeed` / `sameDay` |
 | `@relay/catalog` | `parseNavIndexTxt`, `loadNavIndex`, `extractMarkdownHeadings`, `contentKind`, `buildDirTree`, `publishedFromBlogPath`, `neighborPaths`, `isFeelingLuckyCandidate`, `pickFeelingLuckyPath` |
 | `@relay/ui` | `cachedGet`, `Link`, `RadioTabs`, `safeProps` / `omitUndefined` |

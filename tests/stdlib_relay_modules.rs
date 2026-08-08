@@ -55,7 +55,7 @@ fn date_from_and_iso() {
 #[test]
 fn relay_path_util_modules() {
     let src = r#"
-import { basename, join, normalizeRel, resolveRel, parentDir, siteHref, resolveAssetUrl, rewriteMarkdownAssetUrls } from '@relay/path';
+import { basename, join, normalizeRel, resolveRel, parentDir, siteHref, resolveAssetUrl, rewriteMarkdownAssetUrls, portraitSiblingSrc } from '@relay/path';
 import { take, sortBy, slugify, uniqueId, includes } from '@relay/util';
 import { formatTiny } from '@relay/date';
 import { neighborPaths, isFeelingLuckyCandidate, pickFeelingLuckyPath } from '@relay/catalog';
@@ -81,7 +81,9 @@ export default function App() {
     + '|' + nb.prev + '>' + nb.next
     + '|' + (isFeelingLuckyCandidate('blog/x.md') ? 'L' : 'n')
     + '|' + lucky
-    + '|' + md;
+    + '|' + md
+    + '|' + portraitSiblingSrc('/a/b.png?w=800')
+    + '|' + portraitSiblingSrc('/a/b-portrait.png');
 }
 "#;
     let program = parse(src).expect("parse");
@@ -142,6 +144,8 @@ export default function App() {
             assert!(s.contains("|L|"), "{s}");
             assert!(s.contains("|blog/x.md|"), "{s}");
             assert!(s.contains("![](https://mirror.example/dir/pic.png)"), "{s}");
+            assert!(s.contains("|/a/b-portrait.png?w=800|"), "{s}");
+            assert!(s.ends_with('|'), "{s}"); // empty portraitSiblingSrc for already-portrait
         }
         other => panic!("{other:?}"),
     }

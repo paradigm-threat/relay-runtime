@@ -275,6 +275,47 @@ pub fn path_resolve_asset_url(src: &str, article_rel: &str, mirror_base: &str) -
     format!("{mirror}/{rel}")
 }
 
+/// Landscape `foo.ext` → sibling `foo-portrait.ext`, preserving origin + query.
+/// Empty string when SVG, already `-portrait`, or unparseable.
+pub fn path_portrait_sibling_src(src: &str) -> String {
+    if src.is_empty() {
+        return String::new();
+    }
+    let (path_and_host, query) = match src.split_once('?') {
+        Some((p, q)) => (p, Some(q)),
+        None => (src, None),
+    };
+    let lower = path_and_host.to_ascii_lowercase();
+    if lower.ends_with(".svg") {
+        return String::new();
+    }
+    let (prefix, file) = match path_and_host.rfind('/') {
+        Some(i) => (&path_and_host[..=i], &path_and_host[i + 1..]),
+        None => ("", path_and_host),
+    };
+    let Some(dot) = file.rfind('.') else {
+        return String::new();
+    };
+    if dot == 0 {
+        return String::new();
+    }
+    let stem = &file[..dot];
+    let ext = &file[dot..];
+    if stem.to_ascii_lowercase().ends_with("-portrait") {
+        return String::new();
+    }
+    let mut out = String::with_capacity(src.len() + 9);
+    out.push_str(prefix);
+    out.push_str(stem);
+    out.push_str("-portrait");
+    out.push_str(ext);
+    if let Some(q) = query {
+        out.push('?');
+        out.push_str(q);
+    }
+    out
+}
+
 /// Rewrite relative asset URLs in markdown `](...)` and `src="..."` / `src='...'`.
 pub fn path_rewrite_markdown_asset_urls(md: &str, article_rel: &str, mirror_base: &str) -> String {
     if md.is_empty() || mirror_base.trim().is_empty() {
@@ -459,6 +500,14 @@ fn path_module() -> Value {
                 &arg_str(args, 0).unwrap_or_default(),
                 &arg_str(args, 1).unwrap_or_default(),
                 &arg_str(args, 2).unwrap_or_default(),
+            )))
+        }),
+    );
+    m.insert(
+        "portraitSiblingSrc".into(),
+        Value::Native(|args| {
+            Ok(Value::String(path_portrait_sibling_src(
+                &arg_str(args, 0).unwrap_or_default(),
             )))
         }),
     );
