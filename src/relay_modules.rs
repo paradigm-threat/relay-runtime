@@ -499,10 +499,14 @@ pub fn path_rewrite_markdown_asset_urls(md: &str, article_rel: &str, mirror_base
             // Unquoted src= — keep scanning from current `i`.
         }
         // Emit one UTF-8 char (never slice mid-codepoint).
-        let ch = md[i..]
-            .chars()
-            .next()
-            .expect("i is in-bounds and at a char boundary");
+        // Defensive: if a prior byte-scan left `i` mid-sequence, skip to next boundary.
+        if i < md.len() && !md.is_char_boundary(i) {
+            i += 1;
+            continue;
+        }
+        let Some(ch) = md[i..].chars().next() else {
+            break;
+        };
         out.push(ch);
         i += ch.len_utf8();
     }
