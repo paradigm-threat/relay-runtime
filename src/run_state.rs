@@ -32,6 +32,21 @@ thread_local! {
     /// Parsed `nav-index.txt` rows keyed by text hash (warm across loadNavIndex callers / remounts).
     static NAV_INDEX_PARSED: RefCell<Option<(u64, std::rc::Rc<Vec<Value>>)>> =
         RefCell::new(None);
+    /// Extra keys merged onto CleverScript `globalThis` at [`inject_standard_builtins`]
+    /// (e.g. `__RELAY_PORTRAIT_SIBLINGS__` for gateway SSR).
+    static CS_GLOBAL_THIS_EXTRAS: RefCell<HashMap<String, Value>> = RefCell::new(HashMap::new());
+}
+
+/// Seed a value onto CleverScript `globalThis` for the next hook run(s).
+pub fn set_cs_global_this_extra(key: impl Into<String>, value: Value) {
+    CS_GLOBAL_THIS_EXTRAS.with(|m| {
+        m.borrow_mut().insert(key.into(), value);
+    });
+}
+
+/// Drop all [`set_cs_global_this_extra`] entries.
+pub fn clear_cs_global_this_extras() {
+    CS_GLOBAL_THIS_EXTRAS.with(|m| m.borrow_mut().clear());
 }
 
 /// Clear tip GET cache (called with [`clear_run_state`]).
@@ -121,7 +136,49 @@ pub fn inject_standard_builtins(runtime: &Runtime) {
     gt.insert("JSON".to_string(), json);
     gt.insert("Array".to_string(), array);
     gt.insert("Object".to_string(), object);
+    CS_GLOBAL_THIS_EXTRAS.with(|m| {
+        for (k, v) in m.borrow().iter() {
+            gt.insert(k.clone(), v.clone());
+        }
+    });
+    #[cfg(target_arch = "wasm32")]
+    {
+        seed_portrait_siblings_from_browser(&mut gt);
+    }
     env.set("globalThis", Value::Object(gt));
+}
+
+/// Copy browser tip portrait index into CS `globalThis` (sandbox ≠ window.globalThis).
+#[cfg(target_arch = "wasm32")]
+fn seed_portrait_siblings_from_browser(gt: &mut HashMap<String, Value>) {
+    const KEY: &str = "__RELAY_PORTRAIT_SIBLINGS__";
+    if gt.contains_key(KEY) {
+        return;
+    }
+    let json = (|| {
+        let global = js_sys::global();
+        if let Ok(v) = js_sys::Reflect::get(&global, &wasm_bindgen::JsValue::from_str(KEY)) {
+            if !v.is_undefined() && !v.is_null() {
+                if let Ok(s) = js_sys::JSON::stringify(&v) {
+                    if let Some(s) = s.as_string() {
+                        if !s.is_empty() && s != "null" {
+                            return Some(s);
+                        }
+                    }
+                }
+            }
+        }
+        let window = web_sys::window()?;
+        let document = window.document()?;
+        let el = document.get_element_by_id("relay-portrait-siblings")?;
+        el.text_content()
+    })();
+    let Some(raw) = json.filter(|s| !s.is_empty()) else {
+        return;
+    };
+    if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&raw) {
+        gt.insert(KEY.to_string(), Value::from_json(&parsed));
+    }
 }
 
 /// Build Array object with isArray for injection into runtime env.
@@ -580,6 +637,8 @@ pub fn clear_run_state() {
     LOCAL_STORAGE.with(|m| m.borrow_mut().clear());
     HOST_FOR_LAZY.with(|h| *h.borrow_mut() = None);
     clear_tip_get_cache();
+    // Intentionally keep CS_GLOBAL_THIS_EXTRAS: gateway SSR sets them around
+    // `with_isolated_hook_run`, which clears RunState before inject_standard_builtins.
     crate::session_theme::clear_session_theme();
 }
 
