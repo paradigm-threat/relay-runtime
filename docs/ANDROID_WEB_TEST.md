@@ -4,7 +4,34 @@
 
 Last reviewed: **2026-08-15**.
 
-This is the build-and-compare loop. Do **not** start in the product Android client. Runtime first, same hooks on web and Android, **web is the visual standard**.
+This is the build-and-compare loop. Do **not** start in the product Android client. Runtime first, same **client hooks** on web and Android, **web is the visual standard**.
+
+---
+
+## Terminology
+
+A **Relay app** is a **git repo** (a tip / site / library catalog — not an APK). Behavior is files in that repo, wired by **`.relay.yaml`**. The gateway and every client host execute those files; they do not ship a per-app binary UI.
+
+| Term | Meaning |
+|------|---------|
+| **Hook** | A CleverScript module in the repo that the runtime runs. Source of truth for that repo’s behavior. |
+| **Client hook** | UI and client-side flow. Usual path **`hooks/client/*.jsx`** (default GET: **`hooks/client/get.jsx`**). Default export builds a VNode tree. Runs in **relay-runtime** on **WASM (web)** and **JNI (Android)**. `fetch`, `navigate`, theme, composition. Must not touch `document` / `window`. |
+| **Server hook** | Gateway-side request and policy. Usual path **`hooks/server/*.cs`**, listed under **`server.hooks.*`** in `.relay.yaml` (`get`, `query`, `pre-commit`, …). Same language; extra **`@relay/git`**, search, image, SSR modules. Returns HTTP / QUERY / validation — not a native view tree. |
+| **`.relay.yaml`** | Maps hook **roles** to paths (`client.hooks.get.path`, `server.hooks.get.path`, …). That is how a repo *is* an app. |
+| **Host** | Thin platform glue: web JS applies VNodes to the DOM; Android Kotlin applies them to Views. Glue does not author the app. |
+| **`@relay/*` helper** | Rust (in relay-runtime or the gateway) imported from CS. Sorting, paths, dates, catalog, markdown, search, TTS, etc. |
+
+**This tester** compares **client hooks** (demo `hooks/app.jsx` and the same tree on wasm-test). Server hooks are not the APK walkthrough; they still define how a real repo behaves when the product client talks to a gateway.
+
+### Why CleverScript (not JavaScript on device)
+
+JavaScript on Android meant a **custom Hermes** (and earlier JSC) stack. That library did not really work **outside Facebook**. Shipping a JS engine + bridge + React-like runtime for hooks was **too heavy** and looked like a **dead end**.
+
+Absolute **parity** (one hook source, web and Android) needed a language that is **very similar to JavaScript** so authors keep JSX/hooks habits, but **strictly not JS**: a small, specified subset parsed and run in **Rust** (`relay-runtime`). No Hermes, no V8, no hook-transpiler-to-JS on the product path.
+
+CleverScript is **not** a fast JS engine. It is **far less performant** than running real JavaScript, on purpose. Menial and hot work belongs in **Rust helpers**. CS itself is **routing**, **enabling features**, **advanced control flow**, and **orchestration**. Heavy **processing** (parse, search, dates, catalog walks, image, markdown) almost always runs in Rust; the hook **calls** it.
+
+Spec: [CLEVERSCRIPT.md](CLEVERSCRIPT.md). Helpers: [CS_HOST_HELPERS.md](../../relay-gateway/docs/CS_HOST_HELPERS.md). Wiring: [SERVER_HOOKS.md](../../relay-gateway/docs/SERVER_HOOKS.md). Policy: [POLICY.md](POLICY.md).
 
 ---
 
@@ -30,8 +57,10 @@ SDK: typical operator machines have `ANDROID_HOME` / `adb`. Confirm `adb devices
 
 | Tree | What it is | What it is not |
 |------|------------|----------------|
-| **`relay-runtime`** | Engine + **test APK** + **web test app**. Prove every runtime change here first. | Not a product Relay client. |
+| **`relay-runtime`** | Engine + **test APK** + **web test app**. Prove every runtime change here first. GitLab `clevertree/relay-runtime`. | Not a product Relay client. |
+| **`relay-gateway`** | HTTP + git:// server. GitLab `clevertree/relay-server`. | Not the old `clevertree/relay` monorepo (archived). |
 | **`relay-client-android`** | Full **RelayClient** (library UI, remote gateway). Rust JNI `.so`. | Not the runtime test harness. |
+| **`clevertree/relay`** | **Archived** pre-split monorepo. | Not live Relay. Do not clone for work. |
 
 If the demo APK is wrong, the product app will be wrong.
 
@@ -66,7 +95,7 @@ Gaps belong in this crate: `src/android_jni.rs`, `src/style_resolve.rs`, `androi
 # http://localhost:8765/examples/wasm-test/
 ```
 
-Web and Android must run the **same client hooks**. Prefer one source (`examples/wasm-test/hooks/`) and keep `android-demo/src/main/assets/hooks/` in sync. Host glue may differ; **hooks must not**.
+Web and Android must run the **same client hooks** (same CleverScript source). Prefer one source (`examples/wasm-test/hooks/`) and keep `android-demo/src/main/assets/hooks/` in sync. Host glue (`vnodeToDom` vs `VNodeRenderer`) may differ; **hooks must not**. Do not put `document` / Hermes / JS-engine workarounds in the demo.
 
 ### 4. Compare Android to web
 
@@ -101,6 +130,7 @@ Update this list when an item lands (date + one-line result). Do not leave stale
 
 Append dated bullets when testing moves. Newest first.
 
+- **2026-08-15** — Terminology: client vs server hooks, `.relay.yaml` apps, why CleverScript (no Hermes/JS on Android; Rust helpers; CS is routing/orchestration). Repos table: `clevertree/relay` monorepo is archived.
 - **2026-08-15** — Tester doc created. APK + wasm-test exist; visual parity not signed off; hook sync still points at relay-client-web.
 
 ---
@@ -113,10 +143,13 @@ Append dated bullets when testing moves. Newest first.
 
 ## Related
 
+- [CLEVERSCRIPT.md](CLEVERSCRIPT.md) — language subset
+- [POLICY.md](POLICY.md) — no JS engine on the hook path
 - [CROSS_PLATFORM_OS_SUPPORT_PLAN.md](CROSS_PLATFORM_OS_SUPPORT_PLAN.md)
 - [STYLE_RESOLUTION.md](STYLE_RESOLUTION.md)
 - [WEB_WASM_HOST.md](WEB_WASM_HOST.md)
 - [NEXT_STEPS.md](NEXT_STEPS.md)
+- Gateway: [SERVER_HOOKS.md](../../relay-gateway/docs/SERVER_HOOKS.md), [CS_HOST_HELPERS.md](../../relay-gateway/docs/CS_HOST_HELPERS.md)
 - Product shell: `../relay-client-android/README.md`
 
 ---
@@ -135,4 +168,4 @@ When you:
 
 Do **not** mark visual parity signed off unless Android was compared to wasm-test on a device/emulator for the shared `app.jsx` (or successor) sections. Do **not** treat `relay-client-android` as proof of runtime correctness.
 
-Keep the doc **generic** (no named testers). Keep Current state a table, Next steps a table, Progress log dated.
+Keep the doc **generic** (no named testers). Keep Current state a table, Next steps a table, Progress log dated. Keep **Terminology** aligned with `.relay.yaml` / hook paths if those conventions change.

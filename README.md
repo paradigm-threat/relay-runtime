@@ -6,6 +6,8 @@ Universal client hook runtime: parsing, execution, rendering, and debugging for 
 
 Render all client hooks in `relay-template/hooks/client/*` with **relay-runtime** as the **only** execution engine (hooks, tree, reconciliation, **theme styling**). **No** hook transpile-to-JS, **no** legacy JS runtimes for hooks ([POLICY.md](docs/POLICY.md)). **Theme styling is built into relay-runtime** (no separate themed-styler dependency). **Native:** no JS engine on the hook path. **Web:** **relay-runtime** in **WASM** (parsing, execution, styling); browser **JavaScript is glue only** ([WEB_WASM_HOST.md](docs/WEB_WASM_HOST.md)).
 
+The old **`clevertree/relay` monorepo is archived**. This crate is [clevertree/relay-runtime](https://gitlab.com/clevertree/relay-runtime). The gateway is [clevertree/relay-server](https://gitlab.com/clevertree/relay-server) (local folder `relay-gateway/`).
+
 ## Docs
 
 - [ANDROID_WEB_TEST.md](docs/ANDROID_WEB_TEST.md) — in-tree demo APK vs wasm-test; same hooks; web is the visual standard; skip native desktop. **Update this file when Android testing progresses.**
@@ -13,10 +15,8 @@ Render all client hooks in `relay-template/hooks/client/*` with **relay-runtime*
 - [POLICY.md](docs/POLICY.md) — No legacy; no transpiler; theme styling built-in
 - [CLEVERSCRIPT.md](docs/CLEVERSCRIPT.md) — **CleverScript** language spec: supported subset, out-of-scope constructs (prefer JSX over template literals for templating)
 - [NEXT_STEPS.md](docs/NEXT_STEPS.md) — Ordered work (this repo + Relay clients)
-- [PLAN.md](docs/PLAN.md) — Strategy and repo roles
 - [WEB_WASM_HOST.md](docs/WEB_WASM_HOST.md) — Web: WASM core, minimal JS host
-- [PARALLEL_PROJECT_ONE_WORLD.md](docs/PARALLEL_PROJECT_ONE_WORLD.md) — Brother's WebGL one-world / ABACUS stack and Relay integration milestone
-- [IMPLEMENTATION_PHASES.md](docs/IMPLEMENTATION_PHASES.md) — Phased implementation and test scenarios
+- [archive/](docs/archive/) — historical PLAN / phases / language analysis (not the live plan)
 
 ## Phases
 
@@ -30,14 +30,13 @@ Render all client hooks in `relay-template/hooks/client/*` with **relay-runtime*
 
 ## Dev layout
 
-**relay-runtime** is a **sibling checkout** of the Relay monorepo (`relay/`), not nested under `relay-gateway/`:
+**relay-runtime** is a **sibling checkout** of **`relay-gateway/`** (GitLab `relay-server`), not nested under it. Do not use the archived **`clevertree/relay`** monorepo.
 
 ```
-dev/
-  relay/                 # relay-gateway, relay-client-web, …
+dev/relay/
+  relay-gateway/         # GitLab clevertree/relay-server
   relay-runtime/         # this crate (CleverScript + WASM)
-  pt/paradigm-threat-files/
-  md2ast/
+  relay-client-web/
 ```
 
 **relay-gateway** depends on `../../relay-runtime` (path in `relay-gateway/Cargo.toml`). **relay-client-web** builds WASM via `npm run build:wasm` (runs `relay-runtime/scripts/build-wasm-web.sh`).

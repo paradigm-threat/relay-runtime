@@ -2,7 +2,7 @@
 //!
 //! Parses, executes, and renders client hooks (JS-like + JSX) for web and native.
 //!
-//! See docs/PLAN.md and docs/IMPLEMENTATION_PHASES.md.
+//! See docs/POLICY.md, docs/CLEVERSCRIPT.md, and docs/ANDROID_WEB_TEST.md.
 
 pub mod analysis;
 pub mod ast;

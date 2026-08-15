@@ -289,7 +289,7 @@ When writing CleverScript for parked tips (SSR + hydrate):
 ## Related
 
 - [POLICY.md](POLICY.md) — no legacy, no transpiler
-- [PLAN.md](PLAN.md) — strategy and language philosophy
+- [archive/PLAN.md](archive/PLAN.md) — historical strategy
 - [WEB_WASM_HOST.md](WEB_WASM_HOST.md) — web embedding
 - Park tip tiers / catalog SSR anti-pattern: tip `hooks/CLEVERSCRIPT_TIP.md`
 - Gateway SSR HTML cache: `relay-gateway/docs/RELAY_POLICY_AND_PERFORMANCE.md`

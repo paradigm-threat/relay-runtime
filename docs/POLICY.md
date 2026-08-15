@@ -36,7 +36,7 @@ This document states **non‑negotiables** for the Relay client-hook stack. **re
 
 The following are **historical** or **other products**—not part of the Relay hook roadmap:
 
-- **Option B** in [PLAN.md](PLAN.md) (compile hook language to JS for execution) — **not** a Relay target.
+- **Option B** in [archive/PLAN.md](archive/PLAN.md) (compile hook language to JS for execution) — **not** a Relay target.
 - **Migration feature flags** (“WASM renderer until parity with old path”) — **no** old path; parity is **required** before cutover, not a long-lived dual stack.
 
 ---
@@ -44,6 +44,6 @@ The following are **historical** or **other products**—not part of the Relay h
 ## Related
 
 - [CLEVERSCRIPT.md](CLEVERSCRIPT.md) — CleverScript language spec (supported subset, out-of-scope)
-- [PLAN.md](PLAN.md) — strategy and repo roles
 - [WEB_WASM_HOST.md](WEB_WASM_HOST.md) — web embedding
 - [NEXT_STEPS.md](NEXT_STEPS.md) — ordered work
+- [archive/PLAN.md](archive/PLAN.md) — historical strategy

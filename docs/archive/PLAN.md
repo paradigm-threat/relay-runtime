@@ -137,7 +137,7 @@ Host calls run_hook_with_host() → Runtime runs once → returns VNode → host
 
 ---
 
-## 6. CleverScript Hardening (from [CLEVERSCRIPT_ANALYSIS.md](docs/CLEVERSCRIPT_ANALYSIS.md))
+## 6. CleverScript Hardening (from [CLEVERSCRIPT_ANALYSIS.md](CLEVERSCRIPT_ANALYSIS.md))
 
 Recommendations from [CLEVERSCRIPT_ANALYSIS.md](CLEVERSCRIPT_ANALYSIS.md), implemented in phases with **TDD: tests first, then implementation**.
 

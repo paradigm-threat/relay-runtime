@@ -16,13 +16,13 @@ Ordered work aligned with [POLICY.md](POLICY.md): **no legacy**, **no hook trans
 
 ## relay-runtime (this repo)
 
-1. **Parser/runtime parity** — `relay-template/hooks/client/*` ([IMPLEMENTATION_PHASES.md](IMPLEMENTATION_PHASES.md)).
+1. **Parser/runtime parity** — `relay-template/hooks/client/*` (historical phases: [archive/IMPLEMENTATION_PHASES.md](archive/IMPLEMENTATION_PHASES.md)).
 2. **Cross-origin fetch** ✅ — `relayClientBaseUrl` in hooks manifest resolves relative `fetch()` on WASM/Android.
 3. **Stable render loop** ✅ — Web glue runs up to 16 passes on `consume_render_requested()`; desktop/Android mirror this.
 4. **DOM / native host commit** — Versioned host API; [WEB_WASM_HOST.md](WEB_WASM_HOST.md).
 5. **Hooks** — `useEffect` dependency scheduling, `useCallback` memoization (needed for relay-template; fan-edits works with simplified semantics).
 6. **Integration tests** — Enable ignored Layout test; relay-template plugin hooks.
-7. **Docs** — Keep POLICY / PLAN / phases in sync.
+7. **Docs** — Keep POLICY, CLEVERSCRIPT, and ANDROID_WEB_TEST in sync. Historical PLAN/phases live under `docs/archive/`.
 
 ---
 

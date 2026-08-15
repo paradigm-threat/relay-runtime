@@ -508,8 +508,8 @@ To support audio/video/gaming without rerender storms:
 
 ## 12. References
 
-- [PLAN.md](PLAN.md) — Architecture, re-render phases
-- [IMPLEMENTATION_PHASES.md](IMPLEMENTATION_PHASES.md) — Phase 5 DOM/Native
+- [archive/PLAN.md](archive/PLAN.md) — historical architecture
+- [archive/IMPLEMENTATION_PHASES.md](archive/IMPLEMENTATION_PHASES.md) — Phase 5 DOM/Native (historical)
 - [WEB_WASM_HOST.md](WEB_WASM_HOST.md) — Web host contract
 - hook-transpiler `android_jni.rs` — JNI pattern reference
 - themed-styler `android.rs`, `Cargo.toml` — Android feature, JNI, CSS→native conversion

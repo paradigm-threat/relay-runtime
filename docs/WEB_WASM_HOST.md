@@ -106,5 +106,5 @@ All **correctness** of hooks order, state updates, and tree shape stays in Rust/
 
 - [POLICY.md](POLICY.md) — non-goals and “no legacy”
 - [NEXT_STEPS.md](NEXT_STEPS.md) — cross-repo work order
-- [PLAN.md](PLAN.md) — strategy
-- [IMPLEMENTATION_PHASES.md](IMPLEMENTATION_PHASES.md) — Phase 5 web track
+- [archive/PLAN.md](archive/PLAN.md) — historical strategy
+- [archive/IMPLEMENTATION_PHASES.md](archive/IMPLEMENTATION_PHASES.md) — Phase 5 web track (historical)
