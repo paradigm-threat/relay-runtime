@@ -1,6 +1,9 @@
 # Relay-Runtime Cross-Platform OS Support Plan
 
-**Goal:** Build and test relay-runtime on all major OS targets (web, Android, Windows, macOS) with a focus on **rendering efficiency**, **accuracy**, and **minimal rerender overhead**. Rely on native components for performance-critical domains (audio, video, gaming).
+**Product path (2026-08):** **web WASM + Android JNI**. Native Windows/macOS UI is **skipped** — desktop is the web client. Testers: **[ANDROID_WEB_TEST.md](ANDROID_WEB_TEST.md)** and **[TERMINOLOGY.md](TERMINOLOGY.md)**. Do not start in `relay-client-android` or `relay-client-desktop`.
+
+Historical notes below still mention Windows/macOS Skia; those chapters are **not** the current roadmap.
+
 
 **Rendering strategy:** Theme styling is **compiled into relay-runtime** via the **themed-styler** path crate ([POLICY.md](POLICY.md)) — no separate npm/WASM consumer artifact. No webview, no Tauri.
 

@@ -1,33 +1,35 @@
 #!/bin/bash
-# Sync hook files from relay-client-web to relay-runtime and hook-transpiler.
-# Source of truth: relay-client-web/public/hooks/
-# Run after editing hooks in relay-client-web: ./scripts/sync-hooks.sh
+# Tester harness: keep android-demo hooks identical to wasm-test.
+# Source of truth: examples/wasm-test/hooks/
+# Run from relay-runtime: ./scripts/sync-hooks.sh
+#
+# Do not copy from relay-client-web. Do not touch hook-transpiler.
 
-set -e
+set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+RUNTIME_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
-SOURCE="$REPO_ROOT/relay-client-web/public/hooks"
-DEST_RUNTIME="$REPO_ROOT/relay-runtime/android-demo/src/main/assets/hooks"
-DEST_TRANSPILER_WEB="$REPO_ROOT/hook-transpiler/tests/web/public/hooks"
-DEST_TRANSPILER_ANDROID="$REPO_ROOT/hook-transpiler/tests/android/app/src/main/assets/hooks"
+SOURCE="$RUNTIME_ROOT/examples/wasm-test/hooks"
+DEST="$RUNTIME_ROOT/android-demo/src/main/assets/hooks"
 
 if [[ ! -d "$SOURCE" ]]; then
-  echo "Source not found: $SOURCE"
+  echo "Source not found: $SOURCE" >&2
   exit 1
 fi
 
-mkdir -p "$DEST_RUNTIME" "$DEST_TRANSPILER_WEB" "$DEST_TRANSPILER_ANDROID"
-
-# errorBoundary.jsx removed: relay-runtime has built-in error boundary; do not sync
+mkdir -p "$DEST"
+copied=0
 for f in "$SOURCE"/*.jsx; do
   [[ -f "$f" ]] || continue
-  name=$(basename "$f")
-  [[ "$name" == "errorBoundary.jsx" ]] && continue
-  cp "$f" "$DEST_RUNTIME/$name"
-  cp "$f" "$DEST_TRANSPILER_WEB/$name"
-  cp "$f" "$DEST_TRANSPILER_ANDROID/$name"
-  echo "  $name"
+  cp "$f" "$DEST/$(basename "$f")"
+  echo "  $(basename "$f")"
+  copied=$((copied + 1))
 done
 
-echo "Synced hooks from relay-client-web to relay-runtime, hook-transpiler (web + android)"
+if [[ -f "$RUNTIME_ROOT/examples/wasm-test/theme.yaml" ]]; then
+  cp "$RUNTIME_ROOT/examples/wasm-test/theme.yaml" "$RUNTIME_ROOT/android-demo/src/main/assets/theme.yaml"
+  echo "  theme.yaml"
+fi
+
+echo "Synced $copied hooks wasm-test → android-demo"
+echo "Source: $SOURCE"

@@ -6,7 +6,7 @@ Universal client hook runtime: parsing, execution, rendering, and debugging for 
 
 Render all client hooks in `relay-template/hooks/client/*` with **relay-runtime** as the **only** execution engine (hooks, tree, reconciliation, **theme styling**). **No** hook transpile-to-JS, **no** legacy JS runtimes for hooks ([POLICY.md](docs/POLICY.md)). **Theme styling is built into relay-runtime** (no separate themed-styler dependency). **Native:** no JS engine on the hook path. **Web:** **relay-runtime** in **WASM** (parsing, execution, styling); browser **JavaScript is glue only** ([WEB_WASM_HOST.md](docs/WEB_WASM_HOST.md)).
 
-The old **`clevertree/relay` monorepo is archived**. This crate is [clevertree/relay-runtime](https://gitlab.com/clevertree/relay-runtime). The gateway is [clevertree/relay-server](https://gitlab.com/clevertree/relay-server) (local folder `relay-gateway/`).
+The old **`clevertree/relay` monorepo is archived**. This crate is [clevertree/relay-runtime](https://gitlab.com/clevertree/relay-runtime). The gateway is [clevertree/relay-gateway](https://gitlab.com/clevertree/relay-gateway) (local folder `relay-gateway/`).
 
 ## Docs
 
@@ -31,11 +31,11 @@ The old **`clevertree/relay` monorepo is archived**. This crate is [clevertree/r
 
 ## Dev layout
 
-**relay-runtime** is a **sibling checkout** of **`relay-gateway/`** (GitLab `relay-server`), not nested under it. Do not use the archived **`clevertree/relay`** monorepo.
+**relay-runtime** is a **sibling checkout** of **`relay-gateway/`** (GitLab `relay-gateway`), not nested under it. Do not use the archived **`clevertree/relay`** monorepo.
 
 ```
 dev/relay/
-  relay-gateway/         # GitLab clevertree/relay-server
+  relay-gateway/         # GitLab clevertree/relay-gateway
   relay-runtime/         # this crate (CleverScript + WASM)
   relay-client-web/
 ```

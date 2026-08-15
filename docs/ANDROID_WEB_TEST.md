@@ -65,7 +65,7 @@ export default function run(ctx, next) {
 | **Style contract** | Shipped | Runtime resolves `className` + theme → `props.style`. Kotlin **applies** only; it must not parse Tailwind. |
 | **In-tree test APK** | Exists | `android-demo/` — `./scripts/build-install-demo.sh` installs `com.clevertree.relayruntime.demo`. Entry `hooks/app.jsx`. JNI, `HookRenderer`, `VNodeRenderer` (text, color, padding, radius, flex via LinearLayout). |
 | **Web test app** | Exists | `examples/wasm-test/` — `./scripts/test-wasm.sh` → `http://localhost:8765/examples/wasm-test/`. |
-| **Hook sync** | Incomplete | Demo JSX lives in both `android-demo/src/main/assets/hooks/` and `examples/wasm-test/hooks/`. `scripts/sync-hooks.sh` still copies from **relay-client-web**, which is the wrong SoT for **this** harness. Need one shared hook tree for wasm-test ↔ android-demo. |
+| **Hook sync** | Incomplete | Demo JSX lives in both `android-demo/src/main/assets/hooks/` and `examples/wasm-test/hooks/`. **SoT is wasm-test.** Run `./scripts/sync-hooks.sh` to copy into the APK assets. Do not use product `relay-client-web` as the demo SoT. |
 | **Visual parity** | **Not signed off** | APK and wasm-test have not been compared section-by-section (text, theme tokens, flex, spacing). That is the current gate. |
 | **Product client** | Separate | `relay-client-android` = full RelayClient; copies `.so` after `scripts/build-android.sh`. Not the test harness. |
 | **Desktop native** | Skipped | No Windows/macOS from-scratch UI. Desktop = web browser (or packaged web app). |
@@ -80,7 +80,7 @@ SDK: typical operator machines have `ANDROID_HOME` / `adb`. Confirm `adb devices
 | Tree | What it is | What it is not |
 |------|------------|----------------|
 | **`relay-runtime`** | Engine + **test APK** + **web test app**. Prove every runtime change here first. GitLab `clevertree/relay-runtime`. | Not a product Relay client. |
-| **`relay-gateway`** | HTTP + git:// server. GitLab `clevertree/relay-server`. | Not the old `clevertree/relay` monorepo (archived). |
+| **`relay-gateway`** | HTTP + git:// server. GitLab `clevertree/relay-gateway`. | Not the old `clevertree/relay` monorepo (archived). |
 | **`relay-client-android`** | Full **RelayClient** (library UI, remote gateway). Rust JNI `.so`. | Not the runtime test harness. |
 | **`clevertree/relay`** | **Archived** pre-split monorepo. | Not live Relay. Do not clone for work. |
 
@@ -139,7 +139,7 @@ Update this list when an item lands (date + one-line result). Do not leave stale
 |---|------|--------|
 | 1 | Confirm device/emulator; `build-install-demo.sh` launches without crash | **Now** |
 | 2 | Screenshot/walk wasm-test vs APK for `hooks/app.jsx` sections (text + styles) | **Now** |
-| 3 | Unify hook SoT: wasm-test hooks ↔ android-demo assets (stop using product `relay-client-web` as the demo SoT) | Open |
+| 3 | Unify hook SoT: wasm-test → android-demo via `./scripts/sync-hooks.sh` | **Now** — script rewritten; still run it after hook edits |
 | 4 | Fix mismatches in runtime or `VNodeRenderer` apply map; add a regression hook if needed | Open |
 | 5 | Document remaining CSS-subset gaps (unsupported on native by design) | Open |
 | 6 | Re-sync `.so` into `relay-client-android` only after demo ≈ web | Blocked on 2–4 |
@@ -152,7 +152,7 @@ Update this list when an item lands (date + one-line result). Do not leave stale
 
 Append dated bullets when testing moves. Newest first.
 
-- **2026-08-15** — Glossary moved to [TERMINOLOGY.md](TERMINOLOGY.md). Tester keeps client `hooks/app.jsx` vs product `.relay.yaml` / server GET examples.
+- **2026-08-15** — GitLab gateway project is `clevertree/relay-gateway`. `sync-hooks.sh` copies wasm-test → android-demo (not client-web / hook-transpiler).
 - **2026-08-15** — Terminology: client vs server hooks, `.relay.yaml` apps, why CleverScript (no Hermes/JS on Android; Rust helpers; CS is routing/orchestration). Repos table: `clevertree/relay` monorepo is archived.
 - **2026-08-15** — Tester doc created. APK + wasm-test exist; visual parity not signed off; hook sync still points at relay-client-web.
 
