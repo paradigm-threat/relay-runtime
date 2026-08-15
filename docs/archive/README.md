@@ -3,6 +3,7 @@
 Historical strategy notes. **Current** docs live in `docs/`:
 
 - [ANDROID_WEB_TEST.md](../ANDROID_WEB_TEST.md) — Android ↔ web tester (keep current)
+- [TERMINOLOGY.md](../TERMINOLOGY.md) — glossary
 - [POLICY.md](../POLICY.md) — no JS engine on the hook path
 - [CLEVERSCRIPT.md](../CLEVERSCRIPT.md) — language spec
 - [WEB_WASM_HOST.md](../WEB_WASM_HOST.md) — WASM host

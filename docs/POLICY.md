@@ -43,6 +43,7 @@ The following are **historical** or **other products**—not part of the Relay h
 
 ## Related
 
+- [TERMINOLOGY.md](TERMINOLOGY.md) — client vs server hooks, `.relay.yaml`, why CleverScript
 - [CLEVERSCRIPT.md](CLEVERSCRIPT.md) — CleverScript language spec (supported subset, out-of-scope)
 - [WEB_WASM_HOST.md](WEB_WASM_HOST.md) — web embedding
 - [NEXT_STEPS.md](NEXT_STEPS.md) — ordered work

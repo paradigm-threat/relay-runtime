@@ -2,7 +2,7 @@
 //!
 //! Parses, executes, and renders client hooks (JS-like + JSX) for web and native.
 //!
-//! See docs/POLICY.md, docs/CLEVERSCRIPT.md, and docs/ANDROID_WEB_TEST.md.
+//! See docs/POLICY.md, docs/CLEVERSCRIPT.md, docs/TERMINOLOGY.md, and docs/ANDROID_WEB_TEST.md.
 
 pub mod analysis;
 pub mod ast;

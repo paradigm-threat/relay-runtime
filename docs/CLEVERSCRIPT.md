@@ -289,6 +289,7 @@ When writing CleverScript for parked tips (SSR + hydrate):
 ## Related
 
 - [POLICY.md](POLICY.md) — no legacy, no transpiler
+- [TERMINOLOGY.md](TERMINOLOGY.md) — client vs server hooks, why CleverScript
 - [archive/PLAN.md](archive/PLAN.md) — historical strategy
 - [WEB_WASM_HOST.md](WEB_WASM_HOST.md) — web embedding
 - Park tip tiers / catalog SSR anti-pattern: tip `hooks/CLEVERSCRIPT_TIP.md`

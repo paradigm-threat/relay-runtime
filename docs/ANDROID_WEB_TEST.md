@@ -6,32 +6,54 @@ Last reviewed: **2026-08-15**.
 
 This is the build-and-compare loop. Do **not** start in the product Android client. Runtime first, same **client hooks** on web and Android, **web is the visual standard**.
 
+Glossary (app vs APK, client vs server hooks, `.relay.yaml`, why CleverScript): **[TERMINOLOGY.md](TERMINOLOGY.md)**.
+
 ---
 
-## Terminology
+## What this harness runs
 
-A **Relay app** is a **git repo** (a tip / site / library catalog — not an APK). Behavior is files in that repo, wired by **`.relay.yaml`**. The gateway and every client host execute those files; they do not ship a per-app binary UI.
+The demo is **not** a full Relay app: there is **no** `.relay.yaml` in `android-demo/` or `examples/wasm-test/`. Both sides load a **client hook** at **`hooks/app.jsx`**. Server hooks are not in the APK walkthrough; they still matter when the **product** client talks to a gateway.
 
-| Term | Meaning |
-|------|---------|
-| **Hook** | A CleverScript module in the repo that the runtime runs. Source of truth for that repo’s behavior. |
-| **Client hook** | UI and client-side flow. Usual path **`hooks/client/*.jsx`** (default GET: **`hooks/client/get.jsx`**). Default export builds a VNode tree. Runs in **relay-runtime** on **WASM (web)** and **JNI (Android)**. `fetch`, `navigate`, theme, composition. Must not touch `document` / `window`. |
-| **Server hook** | Gateway-side request and policy. Usual path **`hooks/server/*.cs`**, listed under **`server.hooks.*`** in `.relay.yaml` (`get`, `query`, `pre-commit`, …). Same language; extra **`@relay/git`**, search, image, SSR modules. Returns HTTP / QUERY / validation — not a native view tree. |
-| **`.relay.yaml`** | Maps hook **roles** to paths (`client.hooks.get.path`, `server.hooks.get.path`, …). That is how a repo *is* an app. |
-| **Host** | Thin platform glue: web JS applies VNodes to the DOM; Android Kotlin applies them to Views. Glue does not author the app. |
-| **`@relay/*` helper** | Rust (in relay-runtime or the gateway) imported from CS. Sorting, paths, dates, catalog, markdown, search, TTS, etc. |
+**Client hook (this tester)** — default export is a VNode tree. Same file on wasm-test and the APK:
 
-**This tester** compares **client hooks** (demo `hooks/app.jsx` and the same tree on wasm-test). Server hooks are not the APK walkthrough; they still define how a real repo behaves when the product client talks to a gateway.
+```jsx
+export default function App() {
+    return (
+        <StyleContext src="theme.yaml">
+            <AppMain />
+        </StyleContext>
+    )
+}
+```
 
-### Why CleverScript (not JavaScript on device)
+Walk those **client** sections on both hosts: counter / `useState`, style keywords, flex, headings, nested structure. Hooks must not use `document` / `window`.
 
-JavaScript on Android meant a **custom Hermes** (and earlier JSC) stack. That library did not really work **outside Facebook**. Shipping a JS engine + bridge + React-like runtime for hooks was **too heavy** and looked like a **dead end**.
+**Product repo** (not this harness) maps roles in `.relay.yaml`:
 
-Absolute **parity** (one hook source, web and Android) needed a language that is **very similar to JavaScript** so authors keep JSX/hooks habits, but **strictly not JS**: a small, specified subset parsed and run in **Rust** (`relay-runtime`). No Hermes, no V8, no hook-transpiler-to-JS on the product path.
+```yaml
+client:
+  hooks:
+    get:
+      path: hooks/client/get.jsx   # UI — same engine as the demo App()
+server:
+  hooks:
+    get:
+      path: hooks/server/get.cs    # gateway GET / SSR — not in the APK
+```
 
-CleverScript is **not** a fast JS engine. It is **far less performant** than running real JavaScript, on purpose. Menial and hot work belongs in **Rust helpers**. CS itself is **routing**, **enabling features**, **advanced control flow**, and **orchestration**. Heavy **processing** (parse, search, dates, catalog walks, image, markdown) almost always runs in Rust; the hook **calls** it.
+A **server** GET hook returns HTTP (or SSR of the client hook), not a native view tree:
 
-Spec: [CLEVERSCRIPT.md](CLEVERSCRIPT.md). Helpers: [CS_HOST_HELPERS.md](../../relay-gateway/docs/CS_HOST_HELPERS.md). Wiring: [SERVER_HOOKS.md](../../relay-gateway/docs/SERVER_HOOKS.md). Policy: [POLICY.md](POLICY.md).
+```
+export default function run(ctx, next) {
+  if (wantsSiteShell(ctx)) {
+    var ssr = ssrClientHookFromGetContext(ctx, {
+      clientHookPath: "hooks/client/get.jsx"
+    });
+    if (ssr !== null) { return ssr; }
+  }
+  // markdown / image / next…
+}
+```
 
 ---
 
@@ -130,6 +152,7 @@ Update this list when an item lands (date + one-line result). Do not leave stale
 
 Append dated bullets when testing moves. Newest first.
 
+- **2026-08-15** — Glossary moved to [TERMINOLOGY.md](TERMINOLOGY.md). Tester keeps client `hooks/app.jsx` vs product `.relay.yaml` / server GET examples.
 - **2026-08-15** — Terminology: client vs server hooks, `.relay.yaml` apps, why CleverScript (no Hermes/JS on Android; Rust helpers; CS is routing/orchestration). Repos table: `clevertree/relay` monorepo is archived.
 - **2026-08-15** — Tester doc created. APK + wasm-test exist; visual parity not signed off; hook sync still points at relay-client-web.
 
@@ -143,6 +166,7 @@ Append dated bullets when testing moves. Newest first.
 
 ## Related
 
+- [TERMINOLOGY.md](TERMINOLOGY.md) — glossary
 - [CLEVERSCRIPT.md](CLEVERSCRIPT.md) — language subset
 - [POLICY.md](POLICY.md) — no JS engine on the hook path
 - [CROSS_PLATFORM_OS_SUPPORT_PLAN.md](CROSS_PLATFORM_OS_SUPPORT_PLAN.md)
@@ -165,7 +189,8 @@ When you:
 - **sign off** a demo section vs web — say which sections matched; bump Last reviewed
 - change **commands**, package id, entry hook, or log tag — fix the Testing plan snippets here
 - finish hook SoT unification — rewrite the Hook sync row so it is no longer “Incomplete”
+- change hook **roles**, `.relay.yaml` paths, or client vs server meaning — update **[TERMINOLOGY.md](TERMINOLOGY.md)** and the **examples in this file**
 
 Do **not** mark visual parity signed off unless Android was compared to wasm-test on a device/emulator for the shared `app.jsx` (or successor) sections. Do **not** treat `relay-client-android` as proof of runtime correctness.
 
-Keep the doc **generic** (no named testers). Keep Current state a table, Next steps a table, Progress log dated. Keep **Terminology** aligned with `.relay.yaml` / hook paths if those conventions change.
+Keep the doc **generic** (no named testers). Keep Current state a table, Next steps a table, Progress log dated.
