@@ -6,9 +6,11 @@ Ordered work aligned with [POLICY.md](POLICY.md): **no legacy**, **no hook trans
 
 | Phase | Goal | Status |
 |-------|------|--------|
-| **A** | Library UI on web + desktop + Android against **fan-edits** | In progress — see [fan-edits/docs/RELAY_UI_TEST_PLAN.md](../../fan-edits/docs/RELAY_UI_TEST_PLAN.md) |
-| **B** | Native video playback (all platforms) | Deferred |
+| **A0** | Android SDK + device, finish `relay-runtime` Android, demo APK vs wasm-test (same hooks; web is gold) | **Now** — [ANDROID_WEB_TEST.md](ANDROID_WEB_TEST.md) |
+| **A** | Library UI on web + Android product client against **fan-edits** | After A0 — see [fan-edits/docs/RELAY_UI_TEST_PLAN.md](../../fan-edits/docs/RELAY_UI_TEST_PLAN.md) |
+| **B** | Native video playback (web + Android; not Windows native) | Deferred |
 | **C** | Timeline editor / `.reel` | Deferred |
+| **Desktop native** | Windows/macOS Skia UI | **Skipped** — use desktop web |
 
 ---
 
@@ -40,8 +42,11 @@ Ordered work aligned with [POLICY.md](POLICY.md): **no legacy**, **no hook trans
 
 ## relay-client-android
 
-1. **relay-runtime JNI** ✅ — `HookRenderer`, `RelayRuntimeHostHttp`, fan-edits remote gateway.
-2. Re-sync `RelayRuntime.kt` + `jniLibs` after `relay-runtime/scripts/build-android.sh`.
+Full RelayClient (not the runtime test APK). Uses compiled **Rust** `librelay_runtime.so`.
+
+1. **Do not start here.** Prove text + styles on `relay-runtime/android-demo` vs `examples/wasm-test` first ([ANDROID_WEB_TEST.md](ANDROID_WEB_TEST.md)).
+2. **relay-runtime JNI** ✅ — `HookRenderer`, `RelayRuntimeHostHttp`, fan-edits remote gateway.
+3. Re-sync `RelayRuntime.kt` + `jniLibs` after `relay-runtime/scripts/build-android.sh`.
 
 ---
 

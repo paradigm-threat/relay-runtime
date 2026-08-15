@@ -8,14 +8,16 @@
 
 ## 1. Current State Summary
 
+**Testing:** [ANDROID_WEB_TEST.md](ANDROID_WEB_TEST.md) — in-tree Android APK + wasm-test, same hooks, web is the visual standard. Skip native desktop UI. Agents must keep that doc current as testing progresses.
+
 | Platform | Status | Notes |
 |----------|--------|-------|
-| **Web (WASM)** | ✅ Working | `relay-client-web` + vendored `relay-runtime-web.js`; fan-edits e2e |
-| **Desktop (Linux)** | ✅ Working | `relay-runtime-desktop` + `relay-client-desktop`; fan-edits `--verify` |
-| **Android (demo)** | ✅ Working | `relay-runtime/android-demo` APK |
-| **Android (product)** | ✅ Wired | `relay-client-android` + JNI; remote fan-edits gateway |
+| **Web (WASM)** | ✅ Working | `examples/wasm-test` + `relay-client-web`; **visual gold standard** (CSS / Tailwind subset) |
+| **Android (runtime test APK)** | 🔧 In tree | `android-demo/` — build with `scripts/build-install-demo.sh`. Finish gaps here; compare to wasm-test. |
+| **Android (product)** | Wired | `relay-client-android` full RelayClient; consumes **Rust** `librelay_runtime.so` (not npm) |
+| **Desktop** | Web only | Packaged/browser web client. **No** Windows/macOS from-scratch native UI (too costly; Android already has view libraries). Linux `relay-runtime-desktop` exists but is not the product path. |
+| **iOS** | Later | Same model as Android: runtime resolves styles → native props |
 | **Native CLI** | ✅ Working | `relay-cli`, integration tests |
-| **Windows / macOS desktop** | ❌ Not implemented | Linux desktop crate exists |
 
 ### Architecture (unchanged)
 
@@ -191,9 +193,11 @@ When state *does* change:
 
 ---
 
-### Phase B: Windows Native Binary (Custom Skia Renderer)
+### Phase B: Windows Native Binary — **skipped**
 
-**No Tauri.** Desktop uses custom rendering driven by themed-styler.
+Do not build a from-scratch Windows (or macOS) UI. Desktop Relay is the **web** client in a browser or packaged web app. Historical Skia notes below are archive only.
+
+~~**No Tauri.** Desktop uses custom rendering driven by themed-styler.~~
 
 #### B.1 Static/dynamic library
 

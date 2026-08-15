@@ -1,0 +1,16 @@
+---
+description: Android ↔ web runtime tester — in-tree APK, same hooks, web is gold; keep ANDROID_WEB_TEST.md current
+globs: android-demo/**/*,examples/wasm-test/**/*,src/android_jni.rs,src/style_resolve.rs,scripts/build-android.sh,scripts/build-install-demo.sh,scripts/test-wasm.sh
+alwaysApply: false
+---
+
+# Android ↔ web tester
+
+Canonical doc: [`docs/ANDROID_WEB_TEST.md`](docs/ANDROID_WEB_TEST.md).
+
+- **`relay-runtime`** owns the **test APK** (`android-demo/`) and **web test app** (`examples/wasm-test/`). Prove runtime changes there first.
+- **`relay-client-android`** is the product RelayClient (**Rust** `librelay_runtime.so`, not npm). Not the first harness.
+- `./scripts/build-install-demo.sh` then `./scripts/test-wasm.sh`. Compare Android to web. Web is the CSS standard; Android applies `props.style` to native views.
+- Same client hooks on both hosts. Skip Windows/macOS native UI; desktop is web.
+
+**When you change Android testing:** update `docs/ANDROID_WEB_TEST.md` in the same change (Current state, Next steps, Progress log). See that file’s **Agent instructions**.

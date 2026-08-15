@@ -8,6 +8,7 @@ Render all client hooks in `relay-template/hooks/client/*` with **relay-runtime*
 
 ## Docs
 
+- [ANDROID_WEB_TEST.md](docs/ANDROID_WEB_TEST.md) — in-tree demo APK vs wasm-test; same hooks; web is the visual standard; skip native desktop. **Update this file when Android testing progresses.**
 - [CROSS_PLATFORM_OS_SUPPORT_PLAN.md](docs/CROSS_PLATFORM_OS_SUPPORT_PLAN.md) — Style core-only policy; platform glue applies pre-resolved styles only
 - [POLICY.md](docs/POLICY.md) — No legacy; no transpiler; theme styling built-in
 - [CLEVERSCRIPT.md](docs/CLEVERSCRIPT.md) — **CleverScript** language spec: supported subset, out-of-scope constructs (prefer JSX over template literals for templating)

@@ -29,6 +29,12 @@ Platform is implicit from build target. Core binary does all hard work.
 
 See `docs/CROSS_PLATFORM_OS_SUPPORT_PLAN.md` §2.
 
+## Android ↔ web tester
+
+Follow **`docs/ANDROID_WEB_TEST.md`**. In-tree APK + wasm-test; same hooks; web is the visual gold standard. Desktop native UI is skipped.
+
+**When Android/web testing progresses, update that file in the same change** (Current state, Next steps, Progress log). Do not treat `relay-client-android` as proof of runtime correctness.
+
 ## Build & Test
 
 ```bash
