@@ -1195,6 +1195,9 @@ function injectHostManifestFields(hooksManifest, container) {
     ssrArticle = false;
   }
   hooksManifest.relayHostMode = hasSsrMarkup ? 'ssr' : 'csr';
+  // Parked hydrate: ssr → RelayBootShell returns children (P0 HTML). Empty CSR
+  // mounts: csr → full overlay until isClientLive(). Gateway SSR never runs this
+  // inject; BootShell/hostMode default missing relayHostMode to ssr.
   hooksManifest.relaySsrArticlePresent = ssrArticle;
   const boot = getBootStatus(container);
   hooksManifest.relayBootPhase = boot.phase;

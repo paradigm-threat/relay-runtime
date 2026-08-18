@@ -260,6 +260,7 @@ class HookRenderer @JvmOverloads constructor(
 
                 hooksManifest.put("relayClientBaseUrl", base)
                 hooksManifest.put("relayPathSlash", "/")
+                hooksManifest.put("relayHostMode", "csr")
 
                 val vnodeJson = runHookStable(
                     entrySource = entrySource,
@@ -373,7 +374,9 @@ class HookRenderer @JvmOverloads constructor(
                 Log.e(TAG, "loadHooksFromAssets: no .jsx files in $HOOKS_ASSET_DIR")
                 return null
             }
-            val hooksManifest = JSONObject().put("hooks", hooksArray)
+            val hooksManifest = JSONObject()
+                .put("hooks", hooksArray)
+                .put("relayHostMode", "csr")
             Pair(moduleMap, hooksManifest)
         } catch (e: Exception) {
             Log.e(TAG, "loadHooksFromAssets failed", e)

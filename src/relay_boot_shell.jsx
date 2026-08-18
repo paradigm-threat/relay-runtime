@@ -1,6 +1,10 @@
 /**
- * @relay/ui — full-viewport boot overlay while relay-runtime loads hooks/theme.
- * Reads status from hooks manifest (relayBootPhase, relayBootMessage, …).
+ * @relay/ui — CSR-only full-viewport overlay while hooks/theme load.
+ *
+ * Hydrate / parked SSR already has P0 HTML. Covering it with a loading shell is the
+ * opposite of hydrate: keep children, and let html[data-pt-hydrated="0"] mute
+ * interactive controls until isClientLive(). Overlay only when relayHostMode is csr
+ * (empty iframe / Android). Missing host mode = SSR (gateway has no inject).
  */
 import React from 'react'
 import manifest from '@hooks'
@@ -41,15 +45,20 @@ export default function RelayBootShell(props) {
   let detail = bootField('relayBootDetail', '')
   const progress = bootField('relayBootProgress', '')
   const live = isClientLive() === true
+  const csr = bootField('relayHostMode', '') === 'csr'
 
   if (phase === 'idle') {
     phase = 'boot'
   }
 
   const errored = phase === 'error'
-  // Once the host marks the client live, drop the overlay even if the last
-  // manifest snapshot still says phase=render.
-  const booting = !live && !errored
+  // Overlay is CSR-only. SSR/hydrate must keep children so vnode matches P0 HTML
+  // and html[data-pt-hydrated="0"] can grey .pt-client-only until live.
+  const booting = csr && !live && !errored
+
+  if (!csr) {
+    return children
+  }
 
   if (!booting && !errored) {
     return children

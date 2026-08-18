@@ -1,4 +1,4 @@
-//! Virtual `@relay/ui/RelayBootShell` — hook-owned loading overlay (CSR + SSR hosts).
+//! Virtual `@relay/ui/RelayBootShell` — CSR loading overlay; SSR/hydrate returns children.
 
 use crate::host::{Host, HostHandle, ModuleMapHost};
 use crate::value::Value;
@@ -56,8 +56,9 @@ mod tests {
     use crate::vdom::VNode;
     use std::collections::HashMap;
 
-    fn run_boot_shell_hook(import_path: &str) -> HookRunOk {
+    fn run_boot_shell_hook(import_path: &str, host_mode: Option<&str>) -> HookRunOk {
         crate::run_state::clear_run_state();
+        BOOT_SHELL_EXPORTS_CACHE.with(|c| *c.borrow_mut() = None);
         let host = MockHost::new();
         let source = format!(
             r#"
@@ -67,31 +68,73 @@ export default function App() {{
 }}
 "#
         );
+        let mut hooks = HashMap::new();
+        if let Some(mode) = host_mode {
+            hooks.insert("relayHostMode".to_string(), Value::String(mode.to_string()));
+        }
         run_hook_to_vnode_stable_isolated(
             &source,
             host,
             "",
             HashMap::new(),
-            Some(Value::Object(HashMap::new())),
+            Some(Value::Object(hooks)),
             Platform::Web,
         )
         .unwrap_or_else(|e| panic!("boot shell import {import_path} should resolve: {e}"))
+    }
+
+    fn vnode_text(v: &VNode) -> String {
+        match v {
+            VNode::Text(s) => s.clone(),
+            VNode::Element { children, .. } => children.iter().map(vnode_text).collect(),
+            VNode::Empty => String::new(),
+        }
+    }
+
+    fn vnode_class_names(v: &VNode) -> String {
+        match v {
+            VNode::Element { props, children, .. } => {
+                let mut s = match props.get("className") {
+                    Some(crate::vdom::PropValue::String(c)) => c.clone(),
+                    _ => String::new(),
+                };
+                for c in children {
+                    let more = vnode_class_names(c);
+                    if !more.is_empty() {
+                        if !s.is_empty() {
+                            s.push(' ');
+                        }
+                        s.push_str(&more);
+                    }
+                }
+                s
+            }
+            _ => String::new(),
+        }
     }
 
     type HookRunOk = crate::hook_runner::HookRunResult;
 
     #[test]
     fn boot_shell_import_resolves() {
-        let result = run_boot_shell_hook("@relay/ui/RelayBootShell");
+        let result = run_boot_shell_hook("@relay/ui/RelayBootShell", None);
+        assert_eq!(vnode_text(&result.vnode), "hi");
         assert!(
-            !matches!(result.vnode, VNode::Empty),
-            "RelayBootShell should render overlay or children"
+            !vnode_class_names(&result.vnode).contains("relay-boot-shell"),
+            "SSR default must not cover children with a loading overlay"
         );
     }
 
     #[test]
+    fn boot_shell_csr_shows_overlay_before_live() {
+        let result = run_boot_shell_hook("@relay/ui/RelayBootShell", Some("csr"));
+        assert!(vnode_class_names(&result.vnode).contains("relay-boot-shell"));
+        assert_ne!(vnode_text(&result.vnode), "hi");
+    }
+
+    #[test]
     fn boot_shell_jsx_path_resolves() {
-        let result = run_boot_shell_hook("@relay/ui/RelayBootShell.jsx");
+        let result = run_boot_shell_hook("@relay/ui/RelayBootShell.jsx", None);
         assert!(!matches!(result.vnode, VNode::Empty));
     }
 
