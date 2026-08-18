@@ -1,6 +1,6 @@
 # Style Resolution
 
-*Last updated: 2026-08-02 (ET)*
+*Last updated: 2026-08-18 (ET)*
 
 ## Overview
 
@@ -8,7 +8,7 @@
 
 | Platform | Apply model | Theme toggle without CleverScript remount |
 |----------|-------------|-------------------------------------------|
-| **Web** | Keep `className`; inject stylesheet from `css_for_web_system()` (light + dark + `prefers-color-scheme` + `html.dark` / `html.light`) | Flip `document.documentElement` class (and optional tip attr such as `data-pt-theme`). **Do not** call `setCurrentTheme` for chrome. |
+| **Web** | Keep `className`; inject stylesheet from `css_for_web_system()` (light + dark + `prefers-color-scheme` + `html.dark` / `html.light`) | Flip **the mount document’s** `<html>` class (iframe `ownerDocument.documentElement` in the operator SPA; optional tip attr such as `data-pt-theme`). **Do not** call `setCurrentTheme` for chrome. **Do not** write `#relay-ssr-theme` or `html.dark` onto the SPA shell document. |
 | **Android / iOS / Desktop** | Flat **inline** `style` per node (`android_styles_for` / native path). No CSS cascade. | **Today:** `nativeSetThemeAndRender(name)` re-resolves the **stored unresolved VNode** under the new theme and returns JSON for one native apply — **no hook re-run**. **Future (not implemented):** dual style maps on each node so the host swaps maps with zero re-resolve. |
 
 Web dual CSS is the park pattern (`ThemeToggle` + `html.light`/`html.dark`). Android tips must not copy `html.dark` selectors; call the JNI theme API (or a future dual-map host helper) instead.
@@ -48,7 +48,7 @@ Native: no cascade tree — later wins into one flat map. Web stylesheet: cascad
 ### Web (shipped)
 
 1. Runtime emits dual CSS via `css_for_web_system` after style resolve.
-2. Tip chrome flips `html` class to `light` or `dark` (park also sets `data-pt-theme` so `syncHtmlThemeClass` does not force WASM `current_theme` light after remount).
+2. Tip chrome flips `html` class to `light` or `dark` on the **site document** (parked page, or CSR iframe). Park also sets `data-pt-theme` so `syncHtmlThemeClass` does not force WASM `current_theme` light after remount. Operator SPA `ThemedHookRenderer` must not apply this class to the shell `<html>`.
 3. Tip `navChromeCss` / icon swap may use web-only injected CSS for glass / `html.dark` icon rules — that path is **not** portable to Android.
 
 ### Android (prep — host API exists; dual-map not built)

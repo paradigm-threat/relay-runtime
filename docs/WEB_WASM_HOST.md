@@ -12,6 +12,7 @@ This document defines the **target architecture** for **relay-client-web**: **al
 
 - `bootstrap(options?)` — loads WASM, fetches theme/hooks/app, runs app, injects CSS, renders VNode to DOM
 - `vnodeToDom(v)` — converts VNode JSON to DOM nodes
+- Theme CSS / `html.dark` / `data-pt-hydrated` use `container.ownerDocument` (`styleParentFor`, `themeTargetFor`, `syncHtmlHydratedAttr`) so CSR iframe mounts do not restyle the parent page
 
 **The page should use only the minimal glue required to load relay-runtime.** No custom fetch logic, VNode-to-DOM, or main async function in the page.
 

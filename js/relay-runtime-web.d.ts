@@ -95,3 +95,18 @@ export function setCurrentTheme(name: string): void;
  * Host also sets html[data-pt-hydrated]="1" via syncHtmlHydratedAttr. */
 export function setClientLive?(live: boolean): void;
 
+/** Document that owns `container` (iframe `ownerDocument`, else the page). */
+export function documentFor(container?: Element | null): Document | null;
+
+/** Theme CSS parent: ShadowRoot, else the mount document's `<head>` (not the SPA head). */
+export function styleParentFor(container?: Element | null): Element | null;
+
+/** Theme class / hydrate attr target: scoped node, else mount document `<html>`. */
+export function themeTargetFor(container?: Element | null): Element | null;
+
+/** Create or reuse `<style id>` on `parent`; never steal a node from another document. */
+export function ensureStyleElement(id: string, parent: ParentNode | null): HTMLStyleElement | null;
+
+/** Set `html[data-pt-hydrated]` on the mount document, not the operator SPA. */
+export function syncHtmlHydratedAttr(live: boolean, container?: Element | null): void;
+

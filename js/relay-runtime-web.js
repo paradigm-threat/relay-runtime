@@ -17,18 +17,25 @@ import init, {
 
 let _styleId = 'relay-ssr-theme';
 
-/** Parent for injected theme CSS: ShadowRoot when the hook is contained, else document.head. */
-function styleParentFor(container) {
+/** Document that owns `container` (iframe-safe; never assume the SPA `document`). */
+export function documentFor(container) {
+  if (container && container.ownerDocument) return container.ownerDocument;
+  return typeof document !== 'undefined' ? document : null;
+}
+
+/** Parent for injected theme CSS: ShadowRoot, else the mount document's <head> (iframe-safe). */
+export function styleParentFor(container) {
   if (container && typeof container.getRootNode === 'function') {
     const root = container.getRootNode();
     if (root && typeof ShadowRoot !== 'undefined' && root instanceof ShadowRoot) {
       return root;
     }
   }
-  return typeof document !== 'undefined' ? document.head : null;
+  const doc = documentFor(container);
+  return doc ? doc.head : null;
 }
 
-function themeTargetFor(container) {
+export function themeTargetFor(container) {
   if (container && typeof container.getRootNode === 'function') {
     const root = container.getRootNode();
     if (root && typeof ShadowRoot !== 'undefined' && root instanceof ShadowRoot) {
@@ -37,21 +44,30 @@ function themeTargetFor(container) {
         || container;
     }
   }
-  return typeof document !== 'undefined' ? document.documentElement : null;
+  const doc = documentFor(container);
+  return doc ? doc.documentElement : null;
 }
 
 /** Ensure a <style id=...> exists on parent (document.head or a ShadowRoot). */
-function ensureStyleElement(id, parent) {
-  if (typeof document === 'undefined' || !parent) return null;
-  let el = parent.querySelector ? parent.querySelector(`#${id}`) : null;
-  if (!el && parent === document.head) {
-    el = document.getElementById(id);
+export function ensureStyleElement(id, parent) {
+  if (!parent) return null;
+  const doc = parent.ownerDocument || (typeof document !== 'undefined' ? document : null);
+  if (!doc) return null;
+  let el = parent.querySelector ? parent.querySelector(`style#${id}`) : null;
+  if (!el && typeof doc.getElementById === 'function') {
+    const existing = doc.getElementById(id);
+    // Same-document stray node only — never steal `#relay-ssr-theme` from a parent SPA.
+    if (existing && existing.tagName === 'STYLE' && existing.ownerDocument === doc) {
+      parent.appendChild(existing);
+      el = existing;
+    }
   }
   if (!el) {
-    el = document.createElement('style');
+    el = doc.createElement('style');
     el.id = id;
-    if (parent === document.head) parent.appendChild(el);
-    else parent.insertBefore(el, parent.firstChild);
+    parent.appendChild(el);
+  } else if (el.parentNode !== parent) {
+    parent.appendChild(el);
   }
   return el;
 }
@@ -60,8 +76,9 @@ function ensureStyleElement(id, parent) {
 function applyInjectedCss(container) {
   try {
     const css = typeof get_injected_css === 'function' ? get_injected_css() : '';
+    const parent = styleParentFor(container);
     if (css && String(css).trim()) {
-      const styleEl = ensureStyleElement(_styleId, styleParentFor(container));
+      const styleEl = ensureStyleElement(_styleId, parent);
       if (styleEl) styleEl.textContent = String(css);
     }
   } catch (_) {
@@ -114,10 +131,11 @@ function syncHtmlThemeClass(target) {
  * "0" = SSR / pre-live; "1" = CleverScript client interactive (isClientLive).
  * Gateway SSR HTML should emit data-pt-hydrated="0" on <html>; this flips to "1" once.
  */
-function syncHtmlHydratedAttr(live) {
-  if (typeof document === 'undefined') return;
+export function syncHtmlHydratedAttr(live, container) {
+  const doc = documentFor(container);
+  if (!doc) return;
   try {
-    const root = document.documentElement;
+    const root = doc.documentElement;
     if (!root || typeof root.setAttribute !== 'function') return;
     root.setAttribute('data-pt-hydrated', live ? '1' : '0');
   } catch (_) {
@@ -1299,7 +1317,7 @@ export async function renderHook(container, options = {}) {
     } catch (_) {
       /* optional until wasm rebuild */
     }
-    syncHtmlHydratedAttr(false);
+    syncHtmlHydratedAttr(false, container);
 
     if (host) {
       setBootStatus(container, { phase: 'manifest', message: 'Discovering hooks…' });
@@ -1511,7 +1529,7 @@ export async function renderHook(container, options = {}) {
           try {
             if (typeof set_client_live === 'function') set_client_live(true);
           } catch (_) { /* optional */ }
-          syncHtmlHydratedAttr(true);
+          syncHtmlHydratedAttr(true, container);
           livePromoted = true;
           setBootStatus(container, { phase: 'live', message: 'Ready' });
           doRender();
@@ -1525,7 +1543,7 @@ export async function renderHook(container, options = {}) {
         try {
           if (typeof set_client_live === 'function') set_client_live(true);
         } catch (_) { /* optional */ }
-        syncHtmlHydratedAttr(true);
+        syncHtmlHydratedAttr(true, container);
         livePromoted = true;
         setBootStatus(container, { phase: 'live', message: 'Ready' });
         injectHostManifestFields(hooksManifest, container);
