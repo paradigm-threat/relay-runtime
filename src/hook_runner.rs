@@ -79,6 +79,9 @@ impl Host for ClientHookHost {
         if path == "@clevertree/video" || path == "@clevertree/video.js" {
             return Ok(crate::video_host::video_module());
         }
+        if let Some(result) = crate::boot_shell_host::try_load_boot_shell_module(path) {
+            return result;
+        }
         if let Some(m) = crate::relay_modules::try_load_relay_module(path) {
             return Ok(m);
         }

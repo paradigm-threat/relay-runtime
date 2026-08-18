@@ -53,3 +53,6 @@ jni = "0.21"
 themed-styler = { version = "1.2.10", path = "../relay-gateway/themed-styler", features = ["android"] }
 
 [dev-dependencies]
+
+# Nested under ~/dev/relay without being a workspace member.
+[workspace]

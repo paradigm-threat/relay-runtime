@@ -388,6 +388,9 @@ impl Host for AndroidHost {
         if path == "relay-runtime/themed-styler" || path == "relay-runtime/themed-styler.js" {
             return Ok(themed_styler_module());
         }
+        if let Some(result) = crate::boot_shell_host::try_load_boot_shell_module(path) {
+            return result;
+        }
         if let Some(m) = crate::relay_modules::try_load_relay_module(path) {
             return Ok(m);
         }

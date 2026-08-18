@@ -14,6 +14,7 @@ pub mod lexer;
 pub mod markdown_host;
 pub mod relay_modules;
 pub mod session_theme;
+pub mod boot_shell_host;
 pub mod style_host;
 pub mod video_host;
 pub mod parser;
@@ -55,6 +56,7 @@ pub use session_theme::{
     set_session_theme_yaml,
 };
 pub use style_host::{load_style_exports, style_internal_module, try_load_style_module};
+pub use boot_shell_host::{load_relay_boot_shell_exports, try_load_boot_shell_module};
 pub use server_script::run_query_script;
 pub use runtime::Runtime;
 pub use value::{NativeFnClosure, Value};

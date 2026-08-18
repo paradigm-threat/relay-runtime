@@ -17,30 +17,57 @@ import init, {
 
 let _styleId = 'relay-ssr-theme';
 
-/** Ensure a <style id=...> exists in <head>; prefer SSR-injected #relay-ssr-theme when present. */
-function ensureStyleElement(id) {
-  if (typeof document === 'undefined') return null;
-  let el = document.getElementById(id);
+/** Parent for injected theme CSS: ShadowRoot when the hook is contained, else document.head. */
+function styleParentFor(container) {
+  if (container && typeof container.getRootNode === 'function') {
+    const root = container.getRootNode();
+    if (root && typeof ShadowRoot !== 'undefined' && root instanceof ShadowRoot) {
+      return root;
+    }
+  }
+  return typeof document !== 'undefined' ? document.head : null;
+}
+
+function themeTargetFor(container) {
+  if (container && typeof container.getRootNode === 'function') {
+    const root = container.getRootNode();
+    if (root && typeof ShadowRoot !== 'undefined' && root instanceof ShadowRoot) {
+      return container.closest?.('[data-relay-theme-scope="hook"]')
+        || root.querySelector?.('[data-relay-theme-scope="hook"]')
+        || container;
+    }
+  }
+  return typeof document !== 'undefined' ? document.documentElement : null;
+}
+
+/** Ensure a <style id=...> exists on parent (document.head or a ShadowRoot). */
+function ensureStyleElement(id, parent) {
+  if (typeof document === 'undefined' || !parent) return null;
+  let el = parent.querySelector ? parent.querySelector(`#${id}`) : null;
+  if (!el && parent === document.head) {
+    el = document.getElementById(id);
+  }
   if (!el) {
     el = document.createElement('style');
     el.id = id;
-    document.head.appendChild(el);
+    if (parent === document.head) parent.appendChild(el);
+    else parent.insertBefore(el, parent.firstChild);
   }
   return el;
 }
 
-/** Apply CSS from the last run_hook_with_host into the document stylesheet. */
-function applyInjectedCss() {
+/** Apply CSS from the last run_hook_with_host into the mount's root (shadow or document). */
+function applyInjectedCss(container) {
   try {
     const css = typeof get_injected_css === 'function' ? get_injected_css() : '';
     if (css && String(css).trim()) {
-      const styleEl = ensureStyleElement(_styleId);
+      const styleEl = ensureStyleElement(_styleId, styleParentFor(container));
       if (styleEl) styleEl.textContent = String(css);
     }
   } catch (_) {
     /* optional */
   }
-  syncHtmlThemeClass();
+  syncHtmlThemeClass(themeTargetFor(container));
 }
 
 /**
@@ -48,9 +75,9 @@ function applyInjectedCss() {
  * Park tips that flip appearance without setCurrentTheme store the choice on
  * data-pt-theme — prefer that so catalog remounts do not force theme.yaml light.
  */
-function syncHtmlThemeClass() {
+function syncHtmlThemeClass(target) {
   if (typeof document === 'undefined') return;
-  const root = document.documentElement;
+  const root = target || document.documentElement;
   let tip = '';
   try {
     tip = String(root.getAttribute('data-pt-theme') || '').trim();
@@ -374,6 +401,163 @@ async function fetchThemeYamlForHost(baseDir, branch) {
     }
   }
   return '';
+}
+
+/**
+ * Local tip import specs (`hooks/...`, `./...`, `../...`) — not `@relay/*` / packages.
+ * Mirrors gateway SSR `local_import_specs` in ssr_client_hook.rs.
+ * @param {string} source
+ * @returns {string[]}
+ */
+export function localImportSpecs(source) {
+  const out = [];
+  let rest = String(source ?? '');
+  while (true) {
+    const idx = rest.indexOf(' from ');
+    if (idx === -1) break;
+    const after = rest.slice(idx + 6).trimStart();
+    let q = '';
+    if (after.startsWith("'")) q = "'";
+    else if (after.startsWith('"')) q = '"';
+    else {
+      rest = rest.slice(idx + 6);
+      continue;
+    }
+    const body = after.slice(1);
+    const end = body.indexOf(q);
+    if (end === -1) break;
+    const spec = body.slice(0, end);
+    if (
+      spec.startsWith('hooks/') ||
+      spec.startsWith('./') ||
+      spec.startsWith('../') ||
+      spec.endsWith('.jsx') ||
+      spec.endsWith('.js') ||
+      spec.endsWith('.yaml') ||
+      spec.endsWith('.yml')
+    ) {
+      out.push(spec);
+    }
+    rest = body.slice(end + 1);
+  }
+  return out;
+}
+
+/**
+ * Resolve a local import spec relative to the importing module path.
+ * Mirrors gateway SSR `resolve_import_rel`.
+ * @param {string} importer
+ * @param {string} spec
+ * @returns {string}
+ */
+export function resolveImportRel(importer, spec) {
+  const s = String(spec ?? '');
+  if (s.startsWith('hooks/') || !s.startsWith('.')) {
+    return s.replace(/^\/+/, '');
+  }
+  const imp = String(importer ?? '').replace(/^\/+/, '');
+  const slash = imp.lastIndexOf('/');
+  const base = slash === -1 ? '' : imp.slice(0, slash);
+  const joined = (base ? `${base}/` : '') + s;
+  const parts = [];
+  for (const c of joined.split('/')) {
+    if (c === '..') parts.pop();
+    else if (c && c !== '.') parts.push(c);
+  }
+  return parts.join('/');
+}
+
+/**
+ * Insert source under both `rel` and `/rel` (SSR `insert_module` parity).
+ * @param {Record<string, string>} moduleMap
+ * @param {string} pathKey
+ * @param {string} text
+ */
+export function putModuleInMap(moduleMap, pathKey, text) {
+  const k = String(pathKey ?? '').trim();
+  if (!k || typeof text !== 'string') return;
+  if (!looksLikeHookSource(text)) return;
+  const rel = k.replace(/^\/+/, '');
+  moduleMap[rel] = text;
+  moduleMap[`/${rel}`] = text;
+  if (k !== rel && k !== `/${rel}`) moduleMap[k] = text;
+}
+
+/** Skip SPA HTML fallbacks so import closure does not crawl index.html forever. */
+export function looksLikeHookSource(text) {
+  const t = String(text ?? '').trimStart();
+  if (!t) return false;
+  const head = t.slice(0, 64).toLowerCase();
+  if (head.startsWith('<!doctype') || head.startsWith('<html')) return false;
+  return true;
+}
+
+function moduleMapHas(moduleMap, rel) {
+  const r = String(rel ?? '').replace(/^\/+/, '');
+  return Object.prototype.hasOwnProperty.call(moduleMap, r)
+    || Object.prototype.hasOwnProperty.call(moduleMap, `/${r}`);
+}
+
+/** Hard cap so a mis-served HTML tree cannot unbounded-BFS. */
+export const IMPORT_CLOSURE_MAX_MODULES = 256;
+
+/**
+ * BFS of static local imports so CSR matches gateway SSR `preload_import_closure`.
+ * `fetchSource(rel)` should return module text or null/undefined when missing.
+ * @param {Record<string, string>} moduleMap
+ * @param {(rel: string) => Promise<string|null|undefined>} fetchSource
+ * @param {(rel: string) => void} [onLoaded]
+ * @returns {Promise<Record<string, string>>}
+ */
+export async function preloadImportClosure(moduleMap, fetchSource, onLoaded) {
+  const seen = new Set();
+  let frontier = Object.keys(moduleMap).filter((k) => !k.startsWith('/'));
+  while (frontier.length) {
+    if (moduleCount(moduleMap) >= IMPORT_CLOSURE_MAX_MODULES) {
+      console.warn('[relay-runtime] import closure hit', IMPORT_CLOSURE_MAX_MODULES, 'module cap');
+      break;
+    }
+    const toFetch = [];
+    const queued = new Set();
+    for (const path of frontier) {
+      if (seen.has(path)) continue;
+      seen.add(path);
+      const src = moduleMap[path];
+      if (typeof src !== 'string') continue;
+      for (const spec of localImportSpecs(src)) {
+        const rel = resolveImportRel(path, spec);
+        if (!rel || moduleMapHas(moduleMap, rel) || queued.has(rel)) continue;
+        queued.add(rel);
+        toFetch.push(rel);
+      }
+    }
+    if (toFetch.length === 0) break;
+    const nextFrontier = [];
+    await Promise.all(
+      toFetch.map(async (rel) => {
+        if (moduleMapHas(moduleMap, rel)) return;
+        if (moduleCount(moduleMap) >= IMPORT_CLOSURE_MAX_MODULES) return;
+        let body = null;
+        try {
+          body = await fetchSource(rel);
+        } catch (err) {
+          console.warn('[relay-runtime] import closure fetch error:', rel, err);
+          return;
+        }
+        if (typeof body !== 'string' || !looksLikeHookSource(body)) return;
+        putModuleInMap(moduleMap, rel, body);
+        if (!moduleMapHas(moduleMap, rel)) return;
+        nextFrontier.push(rel);
+        if (typeof onLoaded === 'function') onLoaded(rel);
+      }),
+    );
+    frontier = nextFrontier;
+  }
+  return moduleMap;
+}
+
+function moduleCount(moduleMap) {
+  return Object.keys(moduleMap).filter((k) => !k.startsWith('/')).length;
 }
 
 /** Resolve relative media paths against hook gateway base. */
@@ -950,6 +1134,75 @@ function formatRuntimeErrorMessage(msg) {
   }
 }
 
+/** @typedef {'idle'|'wasm'|'manifest'|'modules'|'theme'|'render'|'live'|'error'} BootPhase */
+
+let _currentBootStatus = { phase: 'idle', message: '', detail: '', progress: '' };
+
+/**
+ * Publish boot phase to mount dataset + CustomEvent for hook RelayBootShell.
+ * @param {HTMLElement|null|undefined} container
+ * @param {{ phase?: BootPhase, message?: string, detail?: string, progress?: string }} status
+ */
+export function setBootStatus(container, { phase = 'idle', message = '', detail = '', progress = '' } = {}) {
+  _currentBootStatus = { phase, message, detail, progress };
+  if (container && container.dataset) {
+    container.dataset.relayBootPhase = phase;
+    container.dataset.relayBootMessage = message;
+    if (detail) container.dataset.relayBootDetail = detail;
+    else delete container.dataset.relayBootDetail;
+    if (progress) container.dataset.relayBootProgress = progress;
+    else delete container.dataset.relayBootProgress;
+  }
+  try {
+    if (container && typeof CustomEvent !== 'undefined') {
+      container.dispatchEvent(
+        new CustomEvent('relay-boot-status', { detail: { ..._currentBootStatus }, bubbles: true }),
+      );
+    }
+  } catch (_) {
+    /* optional */
+  }
+}
+
+/**
+ * Read last boot status from container dataset or module-global fallback.
+ * @param {HTMLElement|null|undefined} container
+ */
+export function getBootStatus(container) {
+  if (container && container.dataset && container.dataset.relayBootPhase) {
+    return {
+      phase: container.dataset.relayBootPhase,
+      message: container.dataset.relayBootMessage || '',
+      detail: container.dataset.relayBootDetail || '',
+      progress: container.dataset.relayBootProgress || '',
+    };
+  }
+  return { ..._currentBootStatus };
+}
+
+/** Inject host mode + boot fields into hooks manifest for CleverScript `@hooks`. */
+function injectHostManifestFields(hooksManifest, container) {
+  if (!hooksManifest || typeof hooksManifest !== 'object') return;
+  const hasSsrMarkup =
+    container &&
+    container.dataset &&
+    container.dataset.relaySsr === '1' &&
+    container.childElementCount > 0;
+  let ssrArticle = false;
+  try {
+    ssrArticle = Boolean(hasSsrMarkup && container.querySelector('[data-pt-article]'));
+  } catch (_) {
+    ssrArticle = false;
+  }
+  hooksManifest.relayHostMode = hasSsrMarkup ? 'ssr' : 'csr';
+  hooksManifest.relaySsrArticlePresent = ssrArticle;
+  const boot = getBootStatus(container);
+  hooksManifest.relayBootPhase = boot.phase;
+  hooksManifest.relayBootMessage = boot.message;
+  hooksManifest.relayBootDetail = boot.detail;
+  hooksManifest.relayBootProgress = boot.progress;
+}
+
 export function renderHookErrorUI(container, err, { keepContent = false, title = 'Hook error' } = {}) {
   if (!container) return;
   const panel = document.createElement('div');
@@ -1018,10 +1271,14 @@ export async function renderHook(container, options = {}) {
     host,
     baseUrl = getDefaultBaseUrl(),
     hydrate = false,
+    mode = 'auto',
     branch = '',
     initialPath = '',
     themeYaml = '',
   } = options;
+  const wantHydrate =
+    mode === 'hydrate' ? true : mode === 'csr' ? false : hydrate || container?.dataset?.relaySsr === '1';
+
   let moduleMap = {};
   let source = '';
   let effectivePath = hookPath || 'hooks/app.jsx';
@@ -1033,14 +1290,17 @@ export async function renderHook(container, options = {}) {
   const initialPathNorm = typeof initialPath === 'string' ? initialPath.trim() : '';
 
   try {
-    if (typeof set_client_live === 'function') set_client_live(false);
-  } catch (_) {
-    /* optional until wasm rebuild */
-  }
-  syncHtmlHydratedAttr(false);
+    setBootStatus(container, { phase: 'wasm', message: 'Preparing runtime…' });
+    try {
+      if (typeof set_client_live === 'function') set_client_live(false);
+    } catch (_) {
+      /* optional until wasm rebuild */
+    }
+    syncHtmlHydratedAttr(false);
 
-  if (host) {
-    const base = host.trim().replace(/\/+$/, '');
+    if (host) {
+      setBootStatus(container, { phase: 'manifest', message: 'Discovering hooks…' });
+      const base = host.trim().replace(/\/+$/, '');
     const baseDir = `${base}/`;
     const cacheBust = '?t=' + Date.now();
     const branchHeaders = branchNorm ? { 'X-Relay-Branch': branchNorm } : {};
@@ -1096,14 +1356,17 @@ export async function renderHook(container, options = {}) {
       return s.replace(/^\.\//, '');
     };
     const putModule = (pathKey, text) => {
-      const k = (pathKey || '').trim();
-      if (!k) return;
-      moduleMap[k] = text;
-      const n = keyFromPath(k);
-      if (n && n !== k) moduleMap[n] = text;
+      putModuleInMap(moduleMap, pathKey, text);
     };
     // Parallel prefetch (Android host already does this) — sequential await was ~N RTTs.
     const hookEntries = (hooksManifest.hooks || []).filter((h) => h && h.path);
+    const hookTotal = hookEntries.length || 1;
+    let hookDone = 0;
+    setBootStatus(container, {
+      phase: 'modules',
+      message: `Fetching hooks 0/${hookTotal}…`,
+      progress: `0/${hookTotal}`,
+    });
     await Promise.all(
       hookEntries.map(async (h) => {
         const u = resolveHookUrl(baseDir, h.path) + cacheBust;
@@ -1116,6 +1379,13 @@ export async function renderHook(container, options = {}) {
           }
         } catch (err) {
           console.warn('[relay-runtime] remote hook fetch error:', h.path, err);
+        } finally {
+          hookDone += 1;
+          setBootStatus(container, {
+            phase: 'modules',
+            message: `Fetching hooks ${hookDone}/${hookTotal}…`,
+            progress: `${hookDone}/${hookTotal}`,
+          });
         }
       }),
     );
@@ -1131,6 +1401,30 @@ export async function renderHook(container, options = {}) {
     } else {
       source = moduleMap[effectivePath];
     }
+
+    setBootStatus(container, {
+      phase: 'modules',
+      message: 'Resolving hook imports…',
+      progress: `${moduleCount(moduleMap)}`,
+    });
+    await preloadImportClosure(
+      moduleMap,
+      async (rel) => {
+        const resp = await fetch(resolveHookUrl(baseDir, rel) + cacheBust, { headers: branchHeaders });
+        if (!resp.ok) {
+          console.warn('[relay-runtime] import closure fetch failed:', rel, resp.status);
+          return null;
+        }
+        return resp.text();
+      },
+      () => {
+        setBootStatus(container, {
+          phase: 'modules',
+          message: `Resolving hook imports…`,
+          progress: `${moduleCount(moduleMap)}`,
+        });
+      },
+    );
 
     if (!hooksManifest.hooks || hooksManifest.hooks.length === 0) {
       hooksManifest = { hooks: [{ path: effectivePath, name: 'Default' }] };
@@ -1150,6 +1444,7 @@ export async function renderHook(container, options = {}) {
     }
     setRelayFetchBaseUrl(baseNorm);
     setRelayFetchBranch(branchNorm);
+    setBootStatus(container, { phase: 'theme', message: 'Loading theme…' });
     if (!themeYamlText) {
       themeYamlText = await fetchThemeYamlForHost(baseDir, branchNorm);
     }
@@ -1165,7 +1460,15 @@ export async function renderHook(container, options = {}) {
     const r = await fetch(url);
     if (!r.ok) throw await hookFetchError(r, url);
     source = await r.text();
-    moduleMap[effectivePath] = source;
+    putModuleInMap(moduleMap, effectivePath, source);
+    await preloadImportClosure(moduleMap, async (rel) => {
+      const resp = await fetch(resolveUrl(baseUrl, rel));
+      if (!resp.ok) {
+        console.warn('[relay-runtime] import closure fetch failed:', rel, resp.status);
+        return null;
+      }
+      return resp.text();
+    });
     hooksManifest = { hooks: [{ path: effectivePath, name: 'Default' }] };
     if (initialPathNorm) {
       hooksManifest.relayInitialPath = initialPathNorm.startsWith('/')
@@ -1180,6 +1483,8 @@ export async function renderHook(container, options = {}) {
 
   const doRender = () => {
     try {
+      setBootStatus(container, { phase: 'render', message: 'Rendering UI…' });
+      injectHostManifestFields(hooksManifest, container);
       let vnodeJson;
       for (let pass = 0; pass < 16; pass++) {
         vnodeJson = run_hook_with_host(
@@ -1191,9 +1496,9 @@ export async function renderHook(container, options = {}) {
         );
         if (!consume_render_requested()) break;
       }
-      applyInjectedCss();
+      applyInjectedCss(container);
       let vnode = JSON.parse(vnodeJson);
-      const tryHydrate = hydrate && !hydratedOnce && container.dataset?.relaySsr === '1';
+      const tryHydrate = wantHydrate && !hydratedOnce && container.dataset?.relaySsr === '1';
       if (tryHydrate) {
         const ok = hydrateVnode(vnode, container, invoke_handler, doRender);
         if (ok) {
@@ -1205,6 +1510,7 @@ export async function renderHook(container, options = {}) {
           } catch (_) { /* optional */ }
           syncHtmlHydratedAttr(true);
           livePromoted = true;
+          setBootStatus(container, { phase: 'live', message: 'Ready' });
           doRender();
           return;
         }
@@ -1218,6 +1524,8 @@ export async function renderHook(container, options = {}) {
         } catch (_) { /* optional */ }
         syncHtmlHydratedAttr(true);
         livePromoted = true;
+        setBootStatus(container, { phase: 'live', message: 'Ready' });
+        injectHostManifestFields(hooksManifest, container);
         // Re-run with isClientLive() true so interactive controls enable.
         for (let pass = 0; pass < 16; pass++) {
           vnodeJson = run_hook_with_host(
@@ -1229,11 +1537,14 @@ export async function renderHook(container, options = {}) {
           );
           if (!consume_render_requested()) break;
         }
-        applyInjectedCss();
+        applyInjectedCss(container);
         vnode = JSON.parse(vnodeJson);
       }
       const el = vnodeToDom(vnode, invoke_handler, doRender);
       if (el) container.appendChild(el);
+      if (livePromoted) {
+        setBootStatus(container, { phase: 'live', message: 'Ready' });
+      }
     } catch (e) {
       // SSR markup (if any) is still intact when render fails before the innerHTML wipe;
       // keep it readable and show diagnostics on top instead of blanking the page.
@@ -1249,6 +1560,15 @@ export async function renderHook(container, options = {}) {
     doRender();
   });
   doRender();
+  } catch (e) {
+    const msg = formatRuntimeErrorMessage(e?.message ?? e ?? 'Boot failed');
+    setBootStatus(container, { phase: 'error', message: 'Boot failed', detail: msg });
+    renderHookErrorUI(container, e, {
+      title: 'Boot error',
+      keepContent: container?.dataset?.relaySsr === '1',
+    });
+    throw e;
+  }
 }
 
 /**
@@ -1378,7 +1698,7 @@ export async function bootstrap(options = {}) {
         try {
           const resp = await fetch(url);
           if (resp.ok) {
-            moduleMap[h.path] = await resp.text();
+            putModuleInMap(moduleMap, h.path, await resp.text());
           } else {
             console.warn('[relay-runtime] hook fetch failed:', resp.status, h.path, url);
           }
@@ -1387,6 +1707,23 @@ export async function bootstrap(options = {}) {
         }
       }),
     );
+    if (appSource) {
+      putModuleInMap(moduleMap, appPath || 'hooks/app.jsx', appSource);
+    }
+    await preloadImportClosure(moduleMap, async (rel) => {
+      const url = resolveUrl(baseUrl, rel) + cacheBust;
+      try {
+        const resp = await fetch(url);
+        if (!resp.ok) {
+          console.warn('[relay-runtime] import closure fetch failed:', rel, resp.status, url);
+          return null;
+        }
+        return resp.text();
+      } catch (err) {
+        console.warn('[relay-runtime] import closure fetch error:', rel, err);
+        return null;
+      }
+    });
 
     const hookCount = (manifest.hooks || []).length;
     const loadedCount = Object.keys(moduleMap).length;
@@ -1425,7 +1762,7 @@ export async function bootstrap(options = {}) {
           console.error('[relay-runtime] run_hook_with_host failed:', e);
           throw e;
         }
-        applyInjectedCss();
+        applyInjectedCss(root);
         root.innerHTML = '';
         const vnode = JSON.parse(vnodeJson);
         const el = vnodeToDom(vnode, invoke_handler, doRender);

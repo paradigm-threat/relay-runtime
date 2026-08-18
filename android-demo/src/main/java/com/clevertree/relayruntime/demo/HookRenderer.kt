@@ -178,6 +178,7 @@ class HookRenderer @JvmOverloads constructor(
                 fun putModule(pathKey: String, text: String) {
                     val k = pathKey.trim()
                     if (k.isEmpty()) return
+                    if (!UrlResolve.looksLikeHookSource(text)) return
                     moduleMap.put(k, text)
                     val n = UrlResolve.normalizeModuleKey(k)
                     if (n.isNotEmpty() && n != k) {
@@ -203,6 +204,41 @@ class HookRenderer @JvmOverloads constructor(
                 if (moduleMap.optString(effectivePath).isEmpty()) {
                     val src = fetchUrlString(UrlResolve.resolve(baseDir, hookPath.trim()))
                     putModule(hookPath.trim(), src)
+                }
+
+                run {
+                    val seen = HashSet<String>()
+                    val queue = ArrayList<String>()
+                    val keys = moduleMap.keys()
+                    while (keys.hasNext()) {
+                        val k = keys.next()
+                        if (!k.startsWith("/")) queue.add(k)
+                    }
+                    var loaded = queue.size
+                    while (queue.isNotEmpty() && loaded < 256) {
+                        val path = queue.removeAt(queue.size - 1)
+                        if (!seen.add(path)) continue
+                        val src = moduleMap.optString(path, "")
+                        if (src.isEmpty()) continue
+                        for (spec in UrlResolve.localImportSpecs(src)) {
+                            val rel = UrlResolve.resolveImportRel(path, spec)
+                            if (rel.isEmpty()) continue
+                            if (moduleMap.optString(rel).isNotEmpty() ||
+                                moduleMap.optString("/$rel").isNotEmpty()
+                            ) {
+                                continue
+                            }
+                            try {
+                                val body = fetchUrlString(UrlResolve.resolve(baseDir, rel))
+                                if (!UrlResolve.looksLikeHookSource(body)) continue
+                                putModule(rel, body)
+                                queue.add(rel)
+                                loaded += 1
+                            } catch (e: Exception) {
+                                Log.w(TAG, "import closure fetch failed path=$rel: ${e.message}")
+                            }
+                        }
+                    }
                 }
 
                 val entrySource = moduleMap.optString(effectivePath)

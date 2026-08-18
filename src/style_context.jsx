@@ -1,13 +1,13 @@
-/**
- * @clevertree/style — hook-owned theme loader (embedded in relay-runtime).
- * Gates children until theme YAML is fetched, validated, and applied to the session.
- */
 import React, { useState, useEffect } from 'react'
 import { setSessionThemeYaml, looksLikeThemeYaml } from '@clevertree/style-internal'
 
 export default function StyleContext(props) {
   const src = props.src
   const children = props.children
+  let fullScreen = true
+  try {
+    if (props.fullScreen === false) fullScreen = false
+  } catch (e) {}
   const [phase, setPhase] = useState('loading')
   const [status, setStatus] = useState('Loading theme…')
 
@@ -39,7 +39,7 @@ export default function StyleContext(props) {
 
   if (phase === 'error') {
     return (
-      <div style={{ padding: '12px', fontFamily: 'sans-serif' }}>
+      <div className="relay-theme-error" style={{ padding: '12px', fontFamily: 'sans-serif' }}>
         <p style={{ margin: '0 0 8px', fontWeight: 'bold' }}>Theme error</p>
         <p style={{ margin: '0 0 4px' }}>{status}</p>
         <p style={{ margin: 0, fontSize: '12px', opacity: 0.7 }}>{src}</p>
@@ -47,9 +47,23 @@ export default function StyleContext(props) {
     )
   }
   if (phase !== 'ready') {
+    if (!fullScreen) {
+      return null
+    }
     return (
-      <div style={{ padding: '12px', fontFamily: 'sans-serif' }}>
-        <p style={{ margin: 0 }}>{status}</p>
+      <div className="relay-theme-loading relay-boot-shell" style={{
+        position: 'fixed', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center',
+        background: '#0f172a', color: '#e2e8f0', fontFamily: 'ui-sans-serif, system-ui, sans-serif',
+        zIndex: 9998,
+      }}>
+        <div style={{ textAlign: 'center' }}>
+          <div className="relay-boot-spinner" style={{
+            width: '2rem', height: '2rem', margin: '0 auto 1rem', borderRadius: '9999px',
+            border: '3px solid rgba(148,163,184,0.35)', borderTopColor: '#38bdf8',
+            animation: 'relay-boot-spin 0.8s linear infinite',
+          }} />
+          <p style={{ margin: 0 }}>{status}</p>
+        </div>
       </div>
     )
   }
