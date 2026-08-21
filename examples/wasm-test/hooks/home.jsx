@@ -2,7 +2,7 @@
 import React, { useState, useEffect } from 'react'
 
 const STORAGE_KEY_PEERS = 'relay:peers'
-const DEFAULT_PEERS = 'https://dfw1.relaygateway.net;https://iad1.relaygateway.net;http://localhost:8080'
+const DEFAULT_PEERS = 'https://iad1.relaygateway.net;https://sjc1.relaygateway.net;http://localhost:8080'
 
 export default function Home(props) {
     const openPeerTab = props.openPeerTab

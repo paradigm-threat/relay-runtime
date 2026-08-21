@@ -1737,8 +1737,8 @@ fn tts_module() -> Value {
                 }
             }
             if bases.is_empty() {
-                bases.push("https://dfw1.relaygateway.net".into());
                 bases.push("https://iad1.relaygateway.net".into());
+                bases.push("https://sjc1.relaygateway.net".into());
                 bases.push("https://hkg1.relaygateway.net".into());
             }
             let voice_id = match opts.get("voiceId") {
