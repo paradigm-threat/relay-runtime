@@ -95,6 +95,10 @@ export function setCurrentTheme(name: string): void;
  * Host also sets html[data-pt-hydrated]="1" via syncHtmlHydratedAttr. */
 export function setClientLive?(live: boolean): void;
 
+/** Progressive readiness 0..=4 (see docs/HYDRATE_PHASES.md). */
+export function setClientLivePhase?(phase: number): void;
+export function getClientLivePhase?(): number;
+
 /** Document that owns `container` (iframe `ownerDocument`, else the page). */
 export function documentFor(container?: Element | null): Document | null;
 
@@ -109,4 +113,7 @@ export function ensureStyleElement(id: string, parent: ParentNode | null): HTMLS
 
 /** Set `html[data-pt-hydrated]` on the mount document, not the operator SPA. */
 export function syncHtmlHydratedAttr(live: boolean, container?: Element | null): void;
+
+/** Set `html[data-pt-live-phase]` (+ hydrated flag when phase ≥ 1). */
+export function syncHtmlLivePhaseAttr(phase: number, container?: Element | null): void;
 

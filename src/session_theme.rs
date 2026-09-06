@@ -9,9 +9,9 @@ use std::cell::{Cell, RefCell};
 thread_local! {
     static SESSION_THEME_YAML: RefCell<String> = RefCell::new(String::new());
     static LAST_UNRESOLVED_VNODE: RefCell<Option<VNode>> = RefCell::new(None);
-    /// True only in the browser after SSR hydrate (or CSR mount) succeeds.
-    /// CleverScript gates interactive controls on this so SSR HTML stays inert for no-JS.
-    static CLIENT_LIVE: Cell<bool> = Cell::new(false);
+    /// Progressive client readiness (uniform web / Android / iOS hosts).
+    /// 0 = SSR/cold · 1 = shell · 2 = catalog · 3 = feeds · 4 = interactive
+    static CLIENT_LIVE_PHASE: Cell<u8> = Cell::new(0);
     /// Optional forced single-theme CSS (from `setCurrentTheme`); preferred by get_injected_css.
     static FORCED_THEME_CSS: RefCell<String> = RefCell::new(String::new());
     static CURRENT_THEME_NAME: RefCell<String> = RefCell::new(String::new());
@@ -43,16 +43,39 @@ pub fn clear_session_theme() {
     clear_client_live();
 }
 
+/// Max phase (0..=4). Hosts advance this on idle so first paint stays responsive.
+pub const CLIENT_LIVE_PHASE_MAX: u8 = 4;
+
+pub fn get_client_live_phase() -> u8 {
+    CLIENT_LIVE_PHASE.with(|c| c.get())
+}
+
+pub fn set_client_live_phase(phase: u8) {
+    let p = phase.min(CLIENT_LIVE_PHASE_MAX);
+    CLIENT_LIVE_PHASE.with(|c| c.set(p));
+}
+
+pub fn is_client_live_phase(min: u8) -> bool {
+    get_client_live_phase() >= min
+}
+
+/// Backward-compatible: live means shell phase or higher.
 pub fn is_client_live() -> bool {
-    CLIENT_LIVE.with(|c| c.get())
+    is_client_live_phase(1)
 }
 
 pub fn set_client_live(live: bool) {
-    CLIENT_LIVE.with(|c| c.set(live));
+    if live {
+        if get_client_live_phase() < 1 {
+            set_client_live_phase(1);
+        }
+    } else {
+        set_client_live_phase(0);
+    }
 }
 
 pub fn clear_client_live() {
-    set_client_live(false);
+    set_client_live_phase(0);
 }
 
 pub fn set_forced_theme_css(css: &str) {
@@ -170,8 +193,15 @@ mod tests {
     fn client_live_defaults_false() {
         clear_client_live();
         assert!(!is_client_live());
+        assert_eq!(get_client_live_phase(), 0);
         set_client_live(true);
         assert!(is_client_live());
+        assert_eq!(get_client_live_phase(), 1);
+        set_client_live_phase(3);
+        assert!(is_client_live());
+        assert!(is_client_live_phase(2));
+        assert!(!is_client_live_phase(4));
         clear_client_live();
+        assert_eq!(get_client_live_phase(), 0);
     }
 }

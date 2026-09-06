@@ -6,8 +6,8 @@
 use crate::host::{Host, HostHandle, ModuleMapHost};
 use crate::run_state::set_render_requested;
 use crate::session_theme::{
-    get_session_theme_yaml, is_client_live, looks_like_theme_yaml, patch_current_theme_yaml,
-    set_forced_theme_css, set_session_theme_yaml,
+    get_client_live_phase, get_session_theme_yaml, is_client_live, is_client_live_phase,
+    looks_like_theme_yaml, patch_current_theme_yaml, set_forced_theme_css, set_session_theme_yaml,
 };
 use crate::style_resolve::css_for_forced_theme;
 use crate::value::Value;
@@ -60,6 +60,24 @@ pub fn style_internal_module() -> Value {
     m.insert(
         "isClientLive".to_string(),
         Value::Native(|_args: &[Value]| Ok(Value::Bool(is_client_live()))),
+    );
+    m.insert(
+        "getClientLivePhase".to_string(),
+        Value::Native(|_args: &[Value]| Ok(Value::Number(get_client_live_phase() as f64))),
+    );
+    m.insert(
+        "isClientLivePhase".to_string(),
+        Value::Native(|args: &[Value]| {
+            let min = args
+                .first()
+                .and_then(|v| match v {
+                    Value::Number(n) => Some(*n as u8),
+                    Value::String(s) => s.parse::<u8>().ok(),
+                    _ => None,
+                })
+                .unwrap_or(1);
+            Ok(Value::Bool(is_client_live_phase(min)))
+        }),
     );
     m.insert(
         "getCurrentTheme".to_string(),

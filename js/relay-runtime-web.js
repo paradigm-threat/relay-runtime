@@ -12,6 +12,8 @@ import init, {
   consume_render_requested,
   set_client_live,
   is_client_live,
+  set_client_live_phase,
+  get_client_live_phase,
   get_current_theme_name,
 } from '../wasm/relay_runtime_pkg/relay_runtime.js';
 
@@ -150,9 +152,9 @@ function syncHtmlThemeClass(target) {
 }
 
 /**
- * Park tips style inactive chrome via html[data-pt-hydrated].
- * "0" = SSR / pre-live; "1" = CleverScript client interactive (isClientLive).
- * Gateway SSR HTML should emit data-pt-hydrated="0" on <html>; this flips to "1" once.
+ * Park tips style inactive chrome via html[data-pt-hydrated] + data-pt-live-phase.
+ * Phase 0 = SSR/cold · 1 = shell · 2 = catalog · 3 = feeds · 4 = interactive.
+ * Gateway SSR HTML should emit data-pt-hydrated="0"; this flips as the host advances.
  */
 export function syncHtmlHydratedAttr(live, container) {
   const doc = documentFor(container);
@@ -161,6 +163,29 @@ export function syncHtmlHydratedAttr(live, container) {
     const root = doc.documentElement;
     if (!root || typeof root.setAttribute !== 'function') return;
     root.setAttribute('data-pt-hydrated', live ? '1' : '0');
+    let phase = live ? 1 : 0;
+    try {
+      if (typeof get_client_live_phase === 'function') {
+        phase = Number(get_client_live_phase()) || phase;
+      }
+    } catch (_) {
+      /* optional until wasm rebuild */
+    }
+    root.setAttribute('data-pt-live-phase', String(phase));
+  } catch (_) {
+    /* optional */
+  }
+}
+
+export function syncHtmlLivePhaseAttr(phase, container) {
+  const doc = documentFor(container);
+  if (!doc) return;
+  try {
+    const root = doc.documentElement;
+    if (!root || typeof root.setAttribute !== 'function') return;
+    const p = Math.max(0, Math.min(4, Number(phase) || 0));
+    root.setAttribute('data-pt-live-phase', String(p));
+    root.setAttribute('data-pt-hydrated', p >= 1 ? '1' : '0');
   } catch (_) {
     /* optional */
   }
@@ -1618,43 +1643,71 @@ export async function renderHook(container, options = {}) {
   }
 
   /**
-   * After SSR hydrate + set_client_live(true), catalog widgets (DirNav / ChangeLog)
-   * still need a live doRender. Run that on idle so header clicks stay responsive;
-   * prefer applyPatches over wipe when prevVnode is kept from hydrate.
+   * Incremental live ladder (uniform with Android JNI nativeSetClientLivePhase):
+   *   1 shell → 2 catalog → 3 feeds → 4 interactive
+   * Each step is one idle doRender (applyPatches when possible) so mobile/web
+   * never pay the full P2+P3 tree on the first frame after hydrate.
    */
   function scheduleDeferredLiveUpgrade() {
     if (liveUpgradeScheduled) return;
     liveUpgradeScheduled = true;
-    const run = () => {
+    const phases = [2, 3, 4];
+    let idx = 0;
+    const runNext = () => {
+      if (idx >= phases.length) return;
+      const phase = phases[idx++];
+      try {
+        if (typeof set_client_live_phase === 'function') {
+          set_client_live_phase(phase);
+        } else if (typeof set_client_live === 'function') {
+          set_client_live(true);
+        }
+      } catch (_) {
+        /* optional until wasm rebuild */
+      }
+      syncHtmlLivePhaseAttr(phase, container);
       try {
         doRender();
       } catch (e) {
-        console.error('[relay-runtime] deferred live upgrade failed:', e);
+        console.error('[relay-runtime] live phase', phase, 'failed:', e);
+      }
+      if (idx < phases.length) {
+        scheduleIdle(runNext, 120 + idx * 80);
       }
     };
-    const kick = () => {
-      try {
-        if (typeof requestIdleCallback === 'function') {
-          requestIdleCallback(run, { timeout: 4000 });
-          return;
-        }
-      } catch (_) {
-        /* optional */
-      }
-      setTimeout(run, 120);
-    };
-    // Two rAFs: paint SSR chrome + flush pending input before catalog work.
+    // Two rAFs then idle: paint SSR chrome + flush input before catalog work.
     try {
       if (typeof requestAnimationFrame === 'function') {
         requestAnimationFrame(() => {
-          requestAnimationFrame(kick);
+          requestAnimationFrame(() => scheduleIdle(runNext, 200));
         });
         return;
       }
     } catch (_) {
       /* optional */
     }
-    setTimeout(kick, 0);
+    scheduleIdle(runNext, 200);
+  }
+
+  function scheduleIdle(fn, timeoutMs) {
+    try {
+      if (typeof requestIdleCallback === 'function') {
+        requestIdleCallback(
+          () => {
+            try {
+              fn();
+            } catch (e) {
+              console.error('[relay-runtime] idle task failed:', e);
+            }
+          },
+          { timeout: timeoutMs || 2500 },
+        );
+        return;
+      }
+    } catch (_) {
+      /* optional */
+    }
+    setTimeout(fn, Math.min(timeoutMs || 120, 500));
   }
 
   try {
@@ -1873,12 +1926,16 @@ export async function renderHook(container, options = {}) {
           hydratedOnce = true;
           prevVnode = vnode;
           container.dataset.relayHydrated = '1';
-          // Promote to live without wiping SSR HTML. Catalog (DirNav/ChangeLog) fills on
-          // idle via scheduleDeferredLiveUpgrade → doRender → applyPatches when possible.
+          // Promote shell (phase 1) without wiping SSR HTML. Catalog/feeds/interactive
+          // advance on idle via scheduleDeferredLiveUpgrade → phases 2→3→4.
           try {
-            if (typeof set_client_live === 'function') set_client_live(true);
+            if (typeof set_client_live_phase === 'function') {
+              set_client_live_phase(1);
+            } else if (typeof set_client_live === 'function') {
+              set_client_live(true);
+            }
           } catch (_) { /* optional */ }
-          syncHtmlHydratedAttr(true, container);
+          syncHtmlLivePhaseAttr(1, container);
           livePromoted = true;
           enableClientOnlyChrome(container);
           setBootStatus(container, { phase: 'live', message: 'Ready' });
@@ -1914,13 +1971,17 @@ export async function renderHook(container, options = {}) {
       delete container.dataset.relaySsr;
       if (!livePromoted) {
         try {
-          if (typeof set_client_live === 'function') set_client_live(true);
+          if (typeof set_client_live_phase === 'function') {
+            set_client_live_phase(1);
+          } else if (typeof set_client_live === 'function') {
+            set_client_live(true);
+          }
         } catch (_) { /* optional */ }
-        syncHtmlHydratedAttr(true, container);
+        syncHtmlLivePhaseAttr(1, container);
         livePromoted = true;
         setBootStatus(container, { phase: 'live', message: 'Ready' });
         injectHostManifestFields(hooksManifest, container);
-        // Re-run with isClientLive() true so interactive controls enable.
+        // Re-run at shell phase only; catalog/feeds fill on idle ladder.
         for (let pass = 0; pass < 16; pass++) {
           vnodeJson = run_hook_with_host(
             source,
@@ -1940,6 +2001,7 @@ export async function renderHook(container, options = {}) {
       if (livePromoted) {
         setBootStatus(container, { phase: 'live', message: 'Ready' });
         installRumBeacon(container, { hydrateOk: !!container.dataset?.relayHydrated });
+        scheduleDeferredLiveUpgrade();
       }
     } catch (e) {
       // SSR markup (if any) is still intact when render fails before the innerHTML wipe;

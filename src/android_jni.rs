@@ -11,7 +11,7 @@ use crate::style_resolve::{resolve_vnode_styles, Platform};
 use crate::vdom::{collect_usage_from_vnode_json, value_to_vnode_with_handlers, VNode};
 use crate::value::Value;
 use jni::objects::{JClass, JString};
-use jni::sys::{jboolean, jstring};
+use jni::sys::{jboolean, jint, jstring};
 use jni::JNIEnv;
 use serde_json;
 use std::cell::RefCell;
@@ -672,3 +672,33 @@ pub extern "system" fn Java_com_clevertree_relayruntime_RelayRuntime_nativeSetTh
     };
     new_jstring(&mut env, &vnode_json)
 }
+
+/// Progressive hydrate phase 0..=4 (same ladder as web `set_client_live_phase`).
+#[no_mangle]
+pub extern "system" fn Java_com_clevertree_relayruntime_RelayRuntime_nativeSetClientLivePhase(
+    _env: JNIEnv,
+    _class: JClass,
+    phase: jint,
+) {
+    let p = if phase < 0 { 0u8 } else { (phase as u32).min(255) as u8 };
+    crate::session_theme::set_client_live_phase(p);
+}
+
+#[no_mangle]
+pub extern "system" fn Java_com_clevertree_relayruntime_RelayRuntime_nativeGetClientLivePhase(
+    _env: JNIEnv,
+    _class: JClass,
+) -> jint {
+    crate::session_theme::get_client_live_phase() as jint
+}
+
+/// Backward-compatible shell-live flag (phase ≥ 1).
+#[no_mangle]
+pub extern "system" fn Java_com_clevertree_relayruntime_RelayRuntime_nativeSetClientLive(
+    _env: JNIEnv,
+    _class: JClass,
+    live: jboolean,
+) {
+    crate::session_theme::set_client_live(live != 0);
+}
+

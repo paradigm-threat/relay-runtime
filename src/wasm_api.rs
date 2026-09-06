@@ -384,6 +384,7 @@ pub fn set_theme_and_render(theme_name: &str) -> String {
 }
 
 /// Mark the embed client as live (post-hydrate / CSR). CleverScript `isClientLive()`.
+/// Sets live phase to at least 1 (shell). Prefer [`set_client_live_phase`] for incremental hosts.
 #[wasm_bindgen]
 pub fn set_client_live(live: bool) {
     crate::session_theme::set_client_live(live);
@@ -393,6 +394,33 @@ pub fn set_client_live(live: bool) {
 #[wasm_bindgen]
 pub fn is_client_live() -> bool {
     crate::session_theme::is_client_live()
+}
+
+/// Progressive readiness 0..=4 (SSR → shell → catalog → feeds → interactive).
+#[wasm_bindgen]
+pub fn set_client_live_phase(phase: u32) {
+    crate::session_theme::set_client_live_phase(phase.min(255) as u8);
+}
+
+/// Current progressive readiness phase (0..=4).
+#[wasm_bindgen]
+pub fn get_client_live_phase() -> u32 {
+    crate::session_theme::get_client_live_phase() as u32
+}
+
+/// Diff two VNode JSON trees → coarse patch list JSON (`[{op,data},…]`).
+#[wasm_bindgen]
+pub fn patches_json(old_json: &str, new_json: &str) -> String {
+    let old: crate::vdom::VNode = match serde_json::from_str(old_json) {
+        Ok(v) => v,
+        Err(_) => return "[]".to_string(),
+    };
+    let new: crate::vdom::VNode = match serde_json::from_str(new_json) {
+        Ok(v) => v,
+        Err(_) => return "[]".to_string(),
+    };
+    let p = crate::vdom::reconcile::patches(&old, &new);
+    serde_json::to_string(&p).unwrap_or_else(|_| "[]".to_string())
 }
 
 /// Last theme name passed to `setCurrentTheme` / `set_theme_and_render`.
