@@ -1642,10 +1642,15 @@ export async function renderHook(container, options = {}) {
     }
   }
 
+  // Assigned below. Must be `let` (not a later `const`) so esbuild keeps the same
+  // binding inside scheduleDeferredLiveUpgrade — a post-declared `const doRender`
+  // was renamed to `doRender2` while idle callbacks still called bare `doRender()`.
+  let renderHookPass = () => {};
+
   /**
    * Incremental live ladder (uniform with Android JNI nativeSetClientLivePhase):
    *   1 shell → 2 catalog → 3 feeds → 4 interactive
-   * Each step is one idle doRender (applyPatches when possible) so mobile/web
+   * Each step is one idle renderHookPass (applyPatches when possible) so mobile/web
    * never pay the full P2+P3 tree on the first frame after hydrate.
    */
   function scheduleDeferredLiveUpgrade() {
@@ -1676,7 +1681,7 @@ export async function renderHook(container, options = {}) {
       }
       syncHtmlLivePhaseAttr(phase, container);
       try {
-        doRender();
+        renderHookPass();
       } catch (e) {
         console.error('[relay-runtime] live phase', phase, 'failed:', e);
       }
@@ -1911,7 +1916,7 @@ export async function renderHook(container, options = {}) {
     }
   }
 
-  const doRender = () => {
+  renderHookPass = () => {
     try {
       setBootStatus(container, { phase: 'render', message: 'Rendering UI…' });
       injectHostManifestFields(hooksManifest, container);
@@ -1930,7 +1935,7 @@ export async function renderHook(container, options = {}) {
       let vnode = JSON.parse(vnodeJson);
       const tryHydrate = wantHydrate && !hydratedOnce && container.dataset?.relaySsr === '1';
       if (tryHydrate) {
-        const ok = hydrateVnode(vnode, container, invoke_handler, doRender);
+        const ok = hydrateVnode(vnode, container, invoke_handler, renderHookPass);
         if (ok) {
           hydratedOnce = true;
           prevVnode = vnode;
@@ -1967,7 +1972,7 @@ export async function renderHook(container, options = {}) {
             setBootStatus(container, { phase: 'live', message: 'Ready' });
             return;
           }
-          if (applyVnodePatches(container, prevVnode, patchList, invoke_handler, doRender)) {
+          if (applyVnodePatches(container, prevVnode, patchList, invoke_handler, renderHookPass)) {
             prevVnode = vnode;
             setBootStatus(container, { phase: 'live', message: 'Ready' });
             return;
@@ -2004,7 +2009,7 @@ export async function renderHook(container, options = {}) {
         applyInjectedCss(container);
         vnode = JSON.parse(vnodeJson);
       }
-      const el = vnodeToDom(vnode, invoke_handler, doRender);
+      const el = vnodeToDom(vnode, invoke_handler, renderHookPass);
       if (el) container.appendChild(el);
       prevVnode = vnode;
       if (livePromoted) {
@@ -2024,12 +2029,12 @@ export async function renderHook(container, options = {}) {
   };
 
   installEmbedActionDelegation(container, () => {
-    doRender();
+    renderHookPass();
   });
   // Let the browser flush paint + pending pointer events before the first WASM render.
   setBootStatus(container, { phase: 'render', message: 'Preparing UI…' });
   await yieldToMain();
-  doRender();
+  renderHookPass();
   } catch (e) {
     const msg = formatRuntimeErrorMessage(e?.message ?? e ?? 'Boot failed');
     setBootStatus(container, { phase: 'error', message: 'Boot failed', detail: msg });
