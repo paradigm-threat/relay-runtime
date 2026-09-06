@@ -42,6 +42,39 @@ function yieldToMain() {
   });
 }
 
+/**
+ * Parked SSR: flush paint + pending input before the first WASM `run_hook`.
+ * Absolute header `<a>` must stay hittable; a sync WASM stretch otherwise queues clicks.
+ */
+export async function yieldForInteractive(preferIdleMs = 120) {
+  await yieldToMain();
+  await new Promise((resolve) => {
+    try {
+      if (typeof requestAnimationFrame === 'function') {
+        requestAnimationFrame(() => {
+          requestAnimationFrame(() => resolve());
+        });
+        return;
+      }
+    } catch (_) {
+      /* optional */
+    }
+    setTimeout(resolve, 0);
+  });
+  await yieldToMain();
+  await new Promise((resolve) => {
+    try {
+      if (typeof requestIdleCallback === 'function') {
+        requestIdleCallback(() => resolve(), { timeout: Math.max(0, preferIdleMs | 0) });
+        return;
+      }
+    } catch (_) {
+      /* optional */
+    }
+    setTimeout(resolve, 0);
+  });
+}
+
 /** Document that owns `container` (iframe-safe; never assume the SPA `document`). */
 export function documentFor(container) {
   if (container && container.ownerDocument) return container.ownerDocument;
@@ -2156,9 +2189,14 @@ export async function renderHook(container, options = {}) {
   installEmbedActionDelegation(container, () => {
     renderHookPass();
   });
-  // Let the browser flush paint + pending pointer events before the first WASM render.
+  // Flush paint + pending pointer events before the first WASM render.
+  // Parked SSR gets a longer interactive yield so header absolute <a> stay hittable.
   setBootStatus(container, { phase: 'render', message: 'Preparing UI…' });
-  await yieldToMain();
+  if (wantHydrate && container.dataset?.relaySsr === '1') {
+    await yieldForInteractive(120);
+  } else {
+    await yieldToMain();
+  }
   renderHookPass();
   } catch (e) {
     const msg = formatRuntimeErrorMessage(e?.message ?? e ?? 'Boot failed');

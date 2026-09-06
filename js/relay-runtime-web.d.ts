@@ -131,3 +131,7 @@ export function syncHtmlHydratedAttr(live: boolean, container?: Element | null):
 /** Set `html[data-pt-live-phase]` (+ hydrated flag when phase ≥ 1). */
 export function syncHtmlLivePhaseAttr(phase: number, container?: Element | null): void;
 
+/** Flush paint + input before the first parked-SSR WASM render. */
+export function yieldForInteractive(preferIdleMs?: number): Promise<void>;
+
+
