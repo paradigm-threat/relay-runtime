@@ -29,7 +29,7 @@ Uniform readiness ladder so **no host locks the UI thread** rebuilding the full 
 2. **Soft-hydrate** existing SSR DOM (best-effort child walk). Mismatch **must not** fail the tree.
 3. Promote phase **1**; enable `.pt-client-only` chrome **without wiping** P0 HTML.
 4. **Yield** (rAF × 2 + `requestIdleCallback` / Choreographer / `DispatchQueue`).
-5. Advance **2 → 3 → 4**, one phase per idle slice; prefer **applyPatches** or placeholder `replaceChild` over full wipe.
+5. Advance **2 → 3 → 4**, one phase per idle slice. On parked SSR, **only** swap `[data-pt-*-ssr]` / known islands (`aria-label` Directory, Change log, Auto index) — **never** `applyPatches` against soft-hydrated DOM (vnode≠DOM skew corrupts the tree).
 6. **Parked SSR (`data-relay-ssr=1`): never `container.innerHTML = ''`.** Full wipe is CSR-only.
 7. Never run phases 2–4 synchronously on the hydrate success path.
 
