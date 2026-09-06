@@ -1657,6 +1657,15 @@ export async function renderHook(container, options = {}) {
       if (idx >= phases.length) return;
       const phase = phases[idx++];
       try {
+        // Skip if host/WASM already at or past this phase (monotonic ladder).
+        if (typeof get_client_live_phase === 'function') {
+          const cur = Number(get_client_live_phase()) || 0;
+          if (cur >= phase) {
+            syncHtmlLivePhaseAttr(cur, container);
+            if (idx < phases.length) scheduleIdle(runNext, 80);
+            return;
+          }
+        }
         if (typeof set_client_live_phase === 'function') {
           set_client_live_phase(phase);
         } else if (typeof set_client_live === 'function') {

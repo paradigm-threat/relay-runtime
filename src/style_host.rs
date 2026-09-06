@@ -172,6 +172,53 @@ mod tests {
         assert!(obj.contains_key("setCurrentTheme"));
         assert!(obj.contains_key("getCurrentTheme"));
         assert!(obj.contains_key("isClientLive"));
+        assert!(obj.contains_key("getClientLivePhase"));
+        assert!(obj.contains_key("isClientLivePhase"));
+    }
+
+    #[test]
+    fn client_live_phase_natives_match_session_store() {
+        use crate::session_theme::{clear_client_live, set_client_live_phase};
+        clear_run_state();
+        clear_client_live();
+        let m = style_internal_module();
+        let obj = match m {
+            Value::Object(map) => map,
+            _ => panic!("expected object"),
+        };
+        let get_phase = match obj.get("getClientLivePhase").cloned().unwrap() {
+            Value::Native(f) => f,
+            _ => panic!("getClientLivePhase"),
+        };
+        let is_phase = match obj.get("isClientLivePhase").cloned().unwrap() {
+            Value::Native(f) => f,
+            _ => panic!("isClientLivePhase"),
+        };
+        let is_live = match obj.get("isClientLive").cloned().unwrap() {
+            Value::Native(f) => f,
+            _ => panic!("isClientLive"),
+        };
+        assert_eq!(get_phase(&[]).unwrap(), Value::Number(0.0));
+        assert_eq!(is_live(&[]).unwrap(), Value::Bool(false));
+        assert_eq!(
+            is_phase(&[Value::Number(1.0)]).unwrap(),
+            Value::Bool(false)
+        );
+        set_client_live_phase(2);
+        assert_eq!(get_phase(&[]).unwrap(), Value::Number(2.0));
+        assert_eq!(is_live(&[]).unwrap(), Value::Bool(true));
+        assert_eq!(
+            is_phase(&[Value::Number(2.0)]).unwrap(),
+            Value::Bool(true)
+        );
+        assert_eq!(
+            is_phase(&[Value::String("3".into())]).unwrap(),
+            Value::Bool(false)
+        );
+        // Missing arg defaults to min=1 (shell).
+        assert_eq!(is_phase(&[]).unwrap(), Value::Bool(true));
+        clear_client_live();
+        clear_run_state();
     }
 
     #[test]

@@ -21,6 +21,8 @@ Uniform readiness ladder so **no host locks the UI thread** rebuilding the full 
 
 `isClientLive()` remains **phase ≥ 1** for backward compatibility.
 
+`set_client_live_phase` is **monotonic** (clamped 0..=4): once past a phase, only `0` / `set_client_live(false)` / `clear_client_live` may reset. That prevents stale idle callbacks from demoting readiness and remounting heavy tip work.
+
 ## Host scheduler (normative)
 
 1. Boot with phase **0**; first hook render matches SSR (placeholders for P2+).

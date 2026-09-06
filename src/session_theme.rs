@@ -50,9 +50,18 @@ pub fn get_client_live_phase() -> u8 {
     CLIENT_LIVE_PHASE.with(|c| c.get())
 }
 
+/// Set readiness phase (clamped to [`CLIENT_LIVE_PHASE_MAX`]).
+///
+/// Phases **only advance** (or reset to `0`) so a late/stale host call cannot
+/// demote catalog/feeds mid-session and remount heavy tip work.
 pub fn set_client_live_phase(phase: u8) {
     let p = phase.min(CLIENT_LIVE_PHASE_MAX);
-    CLIENT_LIVE_PHASE.with(|c| c.set(p));
+    CLIENT_LIVE_PHASE.with(|c| {
+        let cur = c.get();
+        if p == 0 || p >= cur {
+            c.set(p);
+        }
+    });
 }
 
 pub fn is_client_live_phase(min: u8) -> bool {
@@ -203,5 +212,46 @@ mod tests {
         assert!(!is_client_live_phase(4));
         clear_client_live();
         assert_eq!(get_client_live_phase(), 0);
+    }
+
+    #[test]
+    fn client_live_phase_clamps_and_is_monotonic() {
+        clear_client_live();
+        set_client_live_phase(99);
+        assert_eq!(get_client_live_phase(), CLIENT_LIVE_PHASE_MAX);
+        set_client_live_phase(2);
+        assert_eq!(
+            get_client_live_phase(),
+            CLIENT_LIVE_PHASE_MAX,
+            "must not demote from 4 → 2"
+        );
+        set_client_live_phase(0);
+        assert_eq!(get_client_live_phase(), 0);
+        set_client_live_phase(1);
+        set_client_live(true);
+        assert_eq!(get_client_live_phase(), 1, "set_client_live(true) stays at ≥1");
+        set_client_live_phase(4);
+        set_client_live(true);
+        assert_eq!(get_client_live_phase(), 4, "set_client_live must not demote");
+        set_client_live(false);
+        assert_eq!(get_client_live_phase(), 0);
+    }
+
+    #[test]
+    fn client_live_phase_gates_ladder() {
+        clear_client_live();
+        for phase in 0..=CLIENT_LIVE_PHASE_MAX {
+            set_client_live_phase(phase);
+            for min in 0..=CLIENT_LIVE_PHASE_MAX {
+                assert_eq!(
+                    is_client_live_phase(min),
+                    phase >= min,
+                    "phase={phase} min={min}"
+                );
+            }
+            assert_eq!(is_client_live(), phase >= 1);
+            // Reset between steps so monotonic advance does not skip.
+            set_client_live_phase(0);
+        }
     }
 }

@@ -171,7 +171,8 @@ fn diff_elements(left: &VNode, right: &VNode, path: &[usize], out: &mut Vec<Diff
 }
 
 /// Coarse patches: replace whole subtrees where structure diverges.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+#[serde(tag = "op", content = "data")]
 pub enum Patch {
     /// Replace everything at `path` with `tree` (path `[]` = root).
     ReplaceSubtree {
@@ -211,6 +212,20 @@ fn patches_at(old: &VNode, new: &VNode, path: &[usize], acc: &mut Vec<Patch>) {
                 ..
             },
         ) if t1 == t2 && k1 == k2 && c1.len() == c2.len() => {
+            let props_equal = match (old, new) {
+                (
+                    VNode::Element { props: a, .. },
+                    VNode::Element { props: b, .. },
+                ) => a == b,
+                _ => false,
+            };
+            if !props_equal {
+                acc.push(Patch::ReplaceSubtree {
+                    path: path.to_vec(),
+                    tree: new.clone(),
+                });
+                return;
+            }
             for i in 0..c1.len() {
                 let mut p = path.to_vec();
                 p.push(i);
@@ -229,6 +244,7 @@ fn patches_at(old: &VNode, new: &VNode, path: &[usize], acc: &mut Vec<Patch>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::vdom::PropValue;
     use std::collections::HashMap;
 
     fn el(tag: &str, children: Vec<VNode>) -> VNode {
@@ -275,5 +291,53 @@ mod tests {
             &p[0],
             Patch::ReplaceSubtree { path, .. } if path == &[0]
         ));
+    }
+
+    #[test]
+    fn patches_prop_change_replaces_element_not_only_children() {
+        let mut props_a = HashMap::new();
+        props_a.insert("className".into(), PropValue::String("cold".into()));
+        let mut props_b = HashMap::new();
+        props_b.insert("className".into(), PropValue::String("live".into()));
+        let child = VNode::Text("same".into());
+        let old = VNode::Element {
+            tag: "div".into(),
+            props: props_a,
+            children: vec![child.clone()],
+            key: None,
+        };
+        let new = VNode::Element {
+            tag: "div".into(),
+            props: props_b,
+            children: vec![child],
+            key: None,
+        };
+        let p = patches(&old, &new);
+        assert_eq!(p.len(), 1, "{p:?}");
+        assert!(matches!(
+            &p[0],
+            Patch::ReplaceSubtree { path, tree }
+                if path.is_empty()
+                    && matches!(
+                        tree,
+                        VNode::Element { props, .. }
+                            if matches!(
+                                props.get("className"),
+                                Some(PropValue::String(s)) if s == "live"
+                            )
+                    )
+        ));
+    }
+
+    #[test]
+    fn patch_json_is_tagged_for_wasm_hosts() {
+        let p = Patch::ReplaceSubtree {
+            path: vec![1, 2],
+            tree: VNode::Text("z".into()),
+        };
+        let s = serde_json::to_string(&p).expect("serialize");
+        assert!(s.contains("\"op\":\"ReplaceSubtree\""), "{s}");
+        assert!(s.contains("\"path\":[1,2]"), "{s}");
+        assert!(s.contains("\"Text\":\"z\"") || s.contains("\"Text\": \"z\""), "{s}");
     }
 }
