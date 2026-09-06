@@ -145,7 +145,16 @@ fn md_node_to_value(
                         .map_err(|e| e.to_string())
                     })));
                     props_vm.insert("onClick".to_string(), wrap);
-                    props_vm.insert("relayControlled".to_string(), Value::Bool(true));
+                    // Absolute / special-scheme links stay native (no preventDefault).
+                    let spa = !(href.starts_with("http://")
+                        || href.starts_with("https://")
+                        || href.starts_with("//")
+                        || href.starts_with("mailto:")
+                        || href.starts_with("tel:")
+                        || href.starts_with('#'));
+                    if spa {
+                        props_vm.insert("relayControlled".to_string(), Value::Bool(true));
+                    }
                 }
             }
             let kid_vals: Vec<Value> = children
@@ -297,7 +306,7 @@ mod tests {
     #[test]
     fn link_with_anchor_on_click_registers_handler() {
         let click = Value::Native(|_: &[Value]| Ok(Value::Null));
-        let v = render_markdown_to_value("[x](https://example.com/foo)", None, Some(&click));
+        let v = render_markdown_to_value("[x](/relative/path.md)", None, Some(&click));
         let mut id = 0u32;
         let vn = value_to_vnode_with_handlers(&v, &mut |_v| {
             id += 1;
@@ -312,12 +321,36 @@ mod tests {
                 assert_eq!(
                     props.get("relayControlled"),
                     Some(&PropValue::Bool(true)),
-                    "anchorOnClick implies relayControlled for host preventDefault policy"
+                    "relative anchorOnClick implies relayControlled for SPA preventDefault"
                 );
             }
         });
         assert!(found_on_click, "expected onClick handler on <a>");
         assert!(id > 0);
+    }
+
+    #[test]
+    fn absolute_https_anchor_on_click_is_not_relay_controlled() {
+        let click = Value::Native(|_: &[Value]| Ok(Value::Null));
+        let v = render_markdown_to_value("[x](https://example.com/foo)", None, Some(&click));
+        let mut id = 0u32;
+        let vn = value_to_vnode_with_handlers(&v, &mut |_v| {
+            id += 1;
+            id
+        });
+        let mut found_on_click = false;
+        walk_vnode_each(&vn, &mut |a| {
+            if let VNode::Element { props, .. } = a {
+                if let Some(PropValue::HandlerId(_)) = props.get("onClick") {
+                    found_on_click = true;
+                }
+                assert!(
+                    props.get("relayControlled").is_none(),
+                    "absolute https must stay native (no relayControlled)"
+                );
+            }
+        });
+        assert!(found_on_click, "expected onClick handler on <a>");
     }
 
     #[test]

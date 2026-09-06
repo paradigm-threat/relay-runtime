@@ -843,15 +843,23 @@ export function propBoolFromVnodeProps(props, key) {
 
 /**
  * When relayControlled anchor: only intercept ordinary left-clicks (SPA); let modified / special targets behave natively.
+ * Absolute http(s) and pre-live SSR (data-pt-hydrated≠1) keep native navigation so links work during boot.
  */
 export function shouldInterceptRelayControlledAnchorClick(e, el) {
   if (e.defaultPrevented || e.button !== 0) return false;
   if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return false;
+  try {
+    const doc = el && el.ownerDocument ? el.ownerDocument : document;
+    if (doc?.documentElement?.getAttribute?.('data-pt-hydrated') !== '1') return false;
+  } catch (_) {
+    /* optional */
+  }
   const t = el.getAttribute('target');
   if (t && t !== '_self') return false;
   const href = el.getAttribute('href');
   if (!href) return true;
   if (/^(mailto:|tel:|#)/i.test(href)) return false;
+  if (/^(https?:|\/\/)/i.test(href)) return false;
   return true;
 }
 
@@ -1306,9 +1314,58 @@ export async function renderHook(container, options = {}) {
   let hooksManifest = { hooks: [{ path: effectivePath, name: 'Default' }] };
   let hydratedOnce = false;
   let livePromoted = false;
+  let liveUpgradeScheduled = false;
   let themeYamlText = typeof themeYaml === 'string' ? themeYaml : '';
   const branchNorm = typeof branch === 'string' ? branch.trim() : '';
   const initialPathNorm = typeof initialPath === 'string' ? initialPath.trim() : '';
+
+  /** Enable SSR-disabled chrome without waiting for a full live rebuild. */
+  function enableClientOnlyChrome(root) {
+    try {
+      const scope = root && root.querySelectorAll ? root : document;
+      const nodes = scope.querySelectorAll('.pt-client-only');
+      for (let i = 0; i < nodes.length; i++) {
+        const el = nodes[i];
+        try {
+          if (el.disabled) el.disabled = false;
+        } catch (_) { /* optional */ }
+        try {
+          if (el.getAttribute('aria-disabled') === 'true') {
+            el.setAttribute('aria-disabled', 'false');
+          }
+        } catch (_) { /* optional */ }
+        try {
+          if (el.hasAttribute('title') && /after page loads/i.test(el.getAttribute('title') || '')) {
+            el.removeAttribute('title');
+          }
+        } catch (_) { /* optional */ }
+      }
+    } catch (_) {
+      /* optional */
+    }
+  }
+
+  /** Keep SSR DOM clickable; fill live-only widgets when the browser is idle. */
+  function scheduleDeferredLiveUpgrade() {
+    if (liveUpgradeScheduled) return;
+    liveUpgradeScheduled = true;
+    const run = () => {
+      try {
+        doRender();
+      } catch (e) {
+        console.error('[relay-runtime] deferred live upgrade failed:', e);
+      }
+    };
+    try {
+      if (typeof requestIdleCallback === 'function') {
+        requestIdleCallback(run, { timeout: 2500 });
+        return;
+      }
+    } catch (_) {
+      /* optional */
+    }
+    setTimeout(run, 50);
+  }
 
   try {
     setBootStatus(container, { phase: 'wasm', message: 'Preparing runtime…' });
@@ -1525,14 +1582,16 @@ export async function renderHook(container, options = {}) {
         if (ok) {
           hydratedOnce = true;
           container.dataset.relayHydrated = '1';
-          // Promote to live and re-render so isClientLive() enables controls.
+          // Promote to live without wiping SSR HTML — a synchronous wipe+vnodeToDom of a
+          // large park page stalls the main thread (~seconds) and makes links feel dead.
           try {
             if (typeof set_client_live === 'function') set_client_live(true);
           } catch (_) { /* optional */ }
           syncHtmlHydratedAttr(true, container);
           livePromoted = true;
+          enableClientOnlyChrome(container);
           setBootStatus(container, { phase: 'live', message: 'Ready' });
-          doRender();
+          scheduleDeferredLiveUpgrade();
           return;
         }
         console.warn('[relay-runtime] SSR hydrate mismatch; falling back to client render');
