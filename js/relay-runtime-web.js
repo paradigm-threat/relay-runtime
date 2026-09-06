@@ -1095,7 +1095,8 @@ function expectedDomTag(tag) {
 }
 
 /**
- * Hydrate: walk server HTML + VNode in lockstep and attach handlers. Returns false on mismatch.
+ * Best-effort hydrate: attach handlers on matching subtrees; leave mismatched
+ * SSR subtrees intact. Parked tips must not fail the whole tree on article skew.
  *
  * @param {object} v - VNode JSON
  * @param {HTMLElement} container - Element whose children are the SSR markup (e.g. #root)
@@ -1115,14 +1116,19 @@ export function hydrateVnode(v, container, invokeHandler = invoke_handler, onAft
       }
       const kids = elementChildNodes(container);
       if (kids.length === 1) {
-        return hydrateElementNode(v, kids[0], invokeHandler, onAfterInvoke, `/${tag || 'root'}`);
+        return hydrateElementNode(v, kids[0], invokeHandler, onAfterInvoke, `/${tag || 'root'}`, true);
       }
-      // Single text-only or empty
       if (kids.length === 0 && (!children || children.length === 0)) return true;
+      if (kids.length > 0 && children && children.length) {
+        console.warn(
+          `[relay-runtime] hydrate root child-count soft mismatch: vnode children vs dom=${kids.length} — best-effort`
+        );
+        return hydrateChildren(children, kids, invokeHandler, onAfterInvoke, `/${tag || 'root'}`);
+      }
       console.warn(
-        `[relay-runtime] hydrate root child-count mismatch: vnode children vs dom=${kids.length}`
+        `[relay-runtime] hydrate root child-count mismatch: vnode children vs dom=${kids.length} — keeping SSR`
       );
-      return false;
+      return true;
     }
     if (Array.isArray(v)) {
       return hydrateChildren(v, elementChildNodes(container), invokeHandler, onAfterInvoke, '/[]');
@@ -1136,7 +1142,6 @@ export function hydrateVnode(v, container, invokeHandler = invoke_handler, onAft
 
 function hydrateChildren(vnodes, domEls, invokeHandler, onAfterInvoke, path) {
   const basePath = path || '';
-  // Expand fragments
   const flat = [];
   for (const c of vnodes || []) {
     if (!c || c.Empty !== undefined || c.Text !== undefined) continue;
@@ -1148,27 +1153,36 @@ function hydrateChildren(vnodes, domEls, invokeHandler, onAfterInvoke, path) {
       flat.push(c);
     }
   }
+  if (flat.length === 0 && domEls.length === 0) return true;
   if (flat.length !== domEls.length) {
-    // Allow soft mismatch when only text nodes differed in SSR
-    if (flat.length === 0 && domEls.length === 0) return true;
     const vnodeTags = flat.map((v) => (v.Element && v.Element.tag) || '?').join(',');
     const domTags = domEls.map((el) => el.tagName || '?').join(',');
     console.warn(
-      `[relay-runtime] hydrate child-count mismatch at ${basePath || '/'}: vnode=${flat.length}[${vnodeTags}] dom=${domEls.length}[${domTags}]`
+      `[relay-runtime] hydrate child-count mismatch at ${basePath || '/'}: vnode=${flat.length}[${vnodeTags}] dom=${domEls.length}[${domTags}] — soft hydrate`
     );
-    return false;
   }
-  for (let i = 0; i < flat.length; i++) {
-    const tag = (flat[i].Element && flat[i].Element.tag) || i;
-    if (!hydrateElementNode(flat[i], domEls[i], invokeHandler, onAfterInvoke, `${basePath}/${tag}[${i}]`)) {
-      return false;
+  const n = Math.min(flat.length, domEls.length);
+  for (let i = 0; i < n; i++) {
+    const expect = expectedDomTag(flat[i].Element && flat[i].Element.tag);
+    const got = String(domEls[i].tagName || '').toUpperCase();
+    if (expect && got && expect !== got && !(expect === 'DIV' && got === 'DIV')) {
+      console.warn(
+        `[relay-runtime] hydrate skip tag mismatch at ${basePath}/${expect}[${i}]: vnode=${expect} dom=${got}`
+      );
+      continue;
     }
+    const tag = (flat[i].Element && flat[i].Element.tag) || i;
+    hydrateElementNode(flat[i], domEls[i], invokeHandler, onAfterInvoke, `${basePath}/${tag}[${i}]`, true);
   }
+  // Soft success: keep SSR even when counts diverge (absolute anchors stay clickable).
   return true;
 }
 
-function hydrateElementNode(v, el, invokeHandler, onAfterInvoke, path) {
-  if (!v || !v.Element || !el) return false;
+/**
+ * @param {boolean} [soft] when true, tag mismatches do not fail the parent walk
+ */
+function hydrateElementNode(v, el, invokeHandler, onAfterInvoke, path, soft = false) {
+  if (!v || !v.Element || !el) return soft;
   const { tag, props, children } = v.Element;
   const here = path || tag || '?';
   if (tag === 'fragment') {
@@ -1176,16 +1190,94 @@ function hydrateElementNode(v, el, invokeHandler, onAfterInvoke, path) {
   }
   const expect = expectedDomTag(tag);
   if (expect && String(el.tagName || '').toUpperCase() !== expect) {
-    // Soft: video/hook stubs use div
     if (!(expect === 'DIV' && String(el.tagName || '').toUpperCase() === 'DIV')) {
       console.warn(
         `[relay-runtime] hydrate tag mismatch at ${here}: vnode=${expect} dom=${el.tagName}`
       );
-      return false;
+      return soft;
     }
   }
   attachHandlersFromProps(el, tag, props || {}, invokeHandler, onAfterInvoke);
   return hydrateChildren(children || [], elementChildNodes(el), invokeHandler, onAfterInvoke, here);
+}
+
+/**
+ * Promote parked SSR shell without wiping `#root`.
+ * @param {HTMLElement} container
+ * @param {{ hydrateOk?: boolean }} [opts]
+ */
+export function promoteSsrShellWithoutWipe(container, opts = {}) {
+  if (!container) return;
+  try {
+    container.dataset.relayHydrated = '1';
+  } catch (_) { /* optional */ }
+  try {
+    if (typeof set_client_live_phase === 'function') {
+      set_client_live_phase(1);
+    } else if (typeof set_client_live === 'function') {
+      set_client_live(true);
+    }
+  } catch (_) { /* optional */ }
+  syncHtmlLivePhaseAttr(1, container);
+  try {
+    const nodes = container.querySelectorAll
+      ? container.querySelectorAll('.pt-client-only')
+      : [];
+    for (let i = 0; i < nodes.length; i++) {
+      const el = nodes[i];
+      try {
+        if (el.disabled) el.disabled = false;
+      } catch (_) { /* optional */ }
+      try {
+        if (el.getAttribute('aria-disabled') === 'true') {
+          el.setAttribute('aria-disabled', 'false');
+        }
+      } catch (_) { /* optional */ }
+    }
+  } catch (_) { /* optional */ }
+  installRumBeacon(container, { hydrateOk: opts.hydrateOk !== false });
+}
+
+const SSR_PLACEHOLDER_SELECTORS =
+  '[data-pt-dirnav-ssr],[data-pt-changelog-ssr],[data-pt-autoindex-ssr]';
+
+function cssEscapeIdent(s) {
+  try {
+    if (typeof CSS !== 'undefined' && typeof CSS.escape === 'function') return CSS.escape(s);
+  } catch (_) { /* optional */ }
+  return String(s).replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+}
+
+/**
+ * Replace only marked SSR placeholders from a new vnode tree (no root wipe).
+ * @returns {boolean} true if at least one placeholder was replaced
+ */
+export function replaceSsrPlaceholdersFromVnode(container, vnode, invokeHandler, onAfterInvoke) {
+  if (!container || !vnode) return false;
+  const placeholders = container.querySelectorAll(SSR_PLACEHOLDER_SELECTORS);
+  if (!placeholders.length) return false;
+  const searchRoot = vnodeToDom(vnode, invokeHandler, onAfterInvoke);
+  if (!searchRoot || typeof searchRoot.querySelectorAll !== 'function') return false;
+  let replaced = 0;
+  for (let i = 0; i < placeholders.length; i++) {
+    const oldEl = placeholders[i];
+    let next = null;
+    const label = oldEl.getAttribute('aria-label');
+    if (label) {
+      next = searchRoot.querySelector(`[aria-label="${cssEscapeIdent(label)}"]`);
+    }
+    if (!next) {
+      if (oldEl.hasAttribute('data-pt-dirnav-ssr')) next = searchRoot.querySelector('.pt-dir-nav');
+      else if (oldEl.hasAttribute('data-pt-changelog-ssr')) next = searchRoot.querySelector('.pt-changelog');
+      else if (oldEl.hasAttribute('data-pt-autoindex-ssr')) next = searchRoot.querySelector('.pt-autoindex');
+    }
+    if (!next || !oldEl.parentNode) continue;
+    try {
+      oldEl.parentNode.replaceChild(next, oldEl);
+      replaced += 1;
+    } catch (_) { /* optional */ }
+  }
+  return replaced > 0;
 }
 
 /**
@@ -1935,29 +2027,16 @@ export async function renderHook(container, options = {}) {
       let vnode = JSON.parse(vnodeJson);
       const tryHydrate = wantHydrate && !hydratedOnce && container.dataset?.relaySsr === '1';
       if (tryHydrate) {
+        // Soft hydrate always keeps SSR; promote shell even if some subtrees skipped.
         const ok = hydrateVnode(vnode, container, invoke_handler, renderHookPass);
-        if (ok) {
-          hydratedOnce = true;
-          prevVnode = vnode;
-          container.dataset.relayHydrated = '1';
-          // Promote shell (phase 1) without wiping SSR HTML. Catalog/feeds/interactive
-          // advance on idle via scheduleDeferredLiveUpgrade → phases 2→3→4.
-          try {
-            if (typeof set_client_live_phase === 'function') {
-              set_client_live_phase(1);
-            } else if (typeof set_client_live === 'function') {
-              set_client_live(true);
-            }
-          } catch (_) { /* optional */ }
-          syncHtmlLivePhaseAttr(1, container);
-          livePromoted = true;
-          enableClientOnlyChrome(container);
-          setBootStatus(container, { phase: 'live', message: 'Ready' });
-          installRumBeacon(container, { hydrateOk: true });
-          scheduleDeferredLiveUpgrade();
-          return;
-        }
-        console.warn('[relay-runtime] SSR hydrate mismatch; falling back to client render');
+        hydratedOnce = true;
+        prevVnode = vnode;
+        livePromoted = true;
+        promoteSsrShellWithoutWipe(container, { hydrateOk: !!ok });
+        enableClientOnlyChrome(container);
+        setBootStatus(container, { phase: 'live', message: 'Ready' });
+        scheduleDeferredLiveUpgrade();
+        return;
       }
       if (
         livePromoted &&
@@ -1978,8 +2057,35 @@ export async function renderHook(container, options = {}) {
             return;
           }
         } catch (e) {
-          console.warn('[relay-runtime] applyPatches failed; full replace', e);
+          console.warn('[relay-runtime] applyPatches failed; trying placeholder replace', e);
         }
+        // Parked SSR: never root-wipe — replace only marked placeholders.
+        if (container.dataset?.relaySsr === '1') {
+          try {
+            if (replaceSsrPlaceholdersFromVnode(container, vnode, invoke_handler, renderHookPass)) {
+              prevVnode = vnode;
+              setBootStatus(container, { phase: 'live', message: 'Ready' });
+              return;
+            }
+          } catch (e2) {
+            console.warn('[relay-runtime] placeholder replace failed; keeping SSR', e2);
+          }
+          prevVnode = vnode;
+          setBootStatus(container, { phase: 'live', message: 'Ready' });
+          return;
+        }
+      }
+      // CSR / non-SSR only: full replace.
+      if (container.dataset?.relaySsr === '1') {
+        // Soft promote without wipe if we somehow reach here without livePromoted.
+        hydratedOnce = true;
+        prevVnode = vnode;
+        livePromoted = true;
+        promoteSsrShellWithoutWipe(container, { hydrateOk: false });
+        enableClientOnlyChrome(container);
+        setBootStatus(container, { phase: 'live', message: 'Ready' });
+        scheduleDeferredLiveUpgrade();
+        return;
       }
       container.innerHTML = '';
       delete container.dataset.relaySsr;

@@ -26,10 +26,12 @@ Uniform readiness ladder so **no host locks the UI thread** rebuilding the full 
 ## Host scheduler (normative)
 
 1. Boot with phase **0**; first hook render matches SSR (placeholders for P2+).
-2. Attach hydrate handlers; set phase **1**; enable `.pt-client-only` chrome **without** wiping P0 HTML.
-3. **Yield** (rAF × 2 + `requestIdleCallback` / Choreographer / `DispatchQueue`).
-4. Advance **2 → 3 → 4**, one phase per idle slice; prefer **applyPatches** over full wipe.
-5. Never run phases 2–4 synchronously on the hydrate success path.
+2. **Soft-hydrate** existing SSR DOM (best-effort child walk). Mismatch **must not** fail the tree.
+3. Promote phase **1**; enable `.pt-client-only` chrome **without wiping** P0 HTML.
+4. **Yield** (rAF × 2 + `requestIdleCallback` / Choreographer / `DispatchQueue`).
+5. Advance **2 → 3 → 4**, one phase per idle slice; prefer **applyPatches** or placeholder `replaceChild` over full wipe.
+6. **Parked SSR (`data-relay-ssr=1`): never `container.innerHTML = ''`.** Full wipe is CSR-only.
+7. Never run phases 2–4 synchronously on the hydrate success path.
 
 ## Tip rules
 

@@ -62,11 +62,25 @@ export function renderHook(
 ): Promise<void>;
 
 /**
- * Hydrate existing SSR markup in `container` from a VNode tree. Returns false on mismatch.
+ * Best-effort hydrate of SSR markup. Soft-matches children; keeps SSR on skew.
  */
 export function hydrateVnode(
   v: unknown,
   container: HTMLElement,
+  invokeHandler?: (id: number) => void,
+  onAfterInvoke?: (() => void) | null,
+): boolean;
+
+/** Promote shell phase without wiping parked SSR `#root`. */
+export function promoteSsrShellWithoutWipe(
+  container: HTMLElement,
+  opts?: { hydrateOk?: boolean },
+): void;
+
+/** Replace `[data-pt-*-ssr]` placeholders from a fresh vnode tree (no root wipe). */
+export function replaceSsrPlaceholdersFromVnode(
+  container: HTMLElement,
+  vnode: unknown,
   invokeHandler?: (id: number) => void,
   onAfterInvoke?: (() => void) | null,
 ): boolean;
