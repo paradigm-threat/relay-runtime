@@ -1322,7 +1322,7 @@ export function replaceSsrPlaceholdersFromVnode(container, vnode, invokeHandler,
       } else if (oldEl.classList?.contains('pt-autoindex') || oldEl.hasAttribute('data-pt-autoindex-ssr')) {
         next = searchRoot.querySelector('.pt-autoindex');
       } else if (oldEl.classList?.contains('pt-deferred-md') || oldEl.hasAttribute('data-pt-deferred-ssr')) {
-        next = searchRoot.querySelector('.pt-deferred-md');
+        next = searchRoot.querySelector('section.pt-deferred-md') || searchRoot.querySelector('[data-pt-deferred],[data-pt-deferred-pending],[data-pt-deferred-ssr]');
       }
     }
     if (!next || !oldEl.parentNode) continue;
