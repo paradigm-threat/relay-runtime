@@ -1272,7 +1272,7 @@ export function promoteSsrShellWithoutWipe(container, opts = {}) {
 }
 
 const SSR_PLACEHOLDER_SELECTORS =
-  '[data-pt-dirnav-ssr],[data-pt-changelog-ssr],[data-pt-autoindex-ssr]';
+  '[data-pt-dirnav-ssr],[data-pt-changelog-ssr],[data-pt-autoindex-ssr],[data-pt-deferred-ssr]';
 
 function cssEscapeIdent(s) {
   try {
@@ -1300,7 +1300,7 @@ export function replaceSsrPlaceholdersFromVnode(container, vnode, invokeHandler,
   };
   container.querySelectorAll(SSR_PLACEHOLDER_SELECTORS).forEach(add);
   // Re-upgrade already-filled islands on later phases (markers removed).
-  ;['Directory', 'Change log', 'Auto index'].forEach((label) => {
+  ;['Directory', 'Change log', 'Auto index', 'Deferred section'].forEach((label) => {
     container.querySelectorAll(`[aria-label="${cssEscapeIdent(label)}"]`).forEach(add);
   });
   if (!targets.length) return false;
@@ -1321,6 +1321,8 @@ export function replaceSsrPlaceholdersFromVnode(container, vnode, invokeHandler,
         next = searchRoot.querySelector('.pt-changelog');
       } else if (oldEl.classList?.contains('pt-autoindex') || oldEl.hasAttribute('data-pt-autoindex-ssr')) {
         next = searchRoot.querySelector('.pt-autoindex');
+      } else if (oldEl.classList?.contains('pt-deferred-md') || oldEl.hasAttribute('data-pt-deferred-ssr')) {
+        next = searchRoot.querySelector('.pt-deferred-md');
       }
     }
     if (!next || !oldEl.parentNode) continue;
