@@ -396,6 +396,164 @@ pub fn path_portrait_sibling_if_present(src: &str, map: &Value) -> String {
     }
 }
 
+/// Canonical http(s) href for dead-URL maps. Must match paradigm-threat-files
+/// `scripts/lib/dead-urls.mjs` `normalizeHttpHref` (and the Node checker tests).
+///
+/// Trim; non-http(s) returned unchanged. Lowercase scheme + host. Drop `#fragment`.
+/// Drop default ports `:80` / `:443`. Drop a trailing `/` on the path except
+/// origin-only `https://host/`. Keep query. Do not rewrite `http`↔`https` or strip
+/// `www`. Parse failure → original string.
+pub fn path_normalize_http_href(href: &str) -> String {
+    let trimmed = href.trim();
+    if trimmed.is_empty() {
+        return String::new();
+    }
+    let lower = trimmed.to_ascii_lowercase();
+    let (scheme, rest) = if lower.starts_with("https://") {
+        ("https", &trimmed[8..])
+    } else if lower.starts_with("http://") {
+        ("http", &trimmed[7..])
+    } else {
+        return trimmed.to_string();
+    };
+
+    let rest = match rest.find('#') {
+        Some(i) => &rest[..i],
+        None => rest,
+    };
+    let (hier, query) = match rest.find('?') {
+        Some(i) => (&rest[..i], &rest[i..]),
+        None => (rest, ""),
+    };
+    if hier.is_empty() {
+        return trimmed.to_string();
+    }
+
+    let hier = match hier.rfind('@') {
+        Some(i) => &hier[i + 1..],
+        None => hier,
+    };
+    if hier.is_empty() {
+        return trimmed.to_string();
+    }
+
+    let Some((authority, path_raw)) = split_http_authority_path(hier) else {
+        return trimmed.to_string();
+    };
+    if authority.is_empty() {
+        return trimmed.to_string();
+    }
+
+    let Some((host_raw, port_opt)) = split_http_host_port(authority) else {
+        return trimmed.to_string();
+    };
+    if host_raw.is_empty() {
+        return trimmed.to_string();
+    }
+    let host = host_raw.to_ascii_lowercase();
+
+    let drop_port = match port_opt {
+        Some("443") if scheme == "https" => true,
+        Some("80") if scheme == "http" => true,
+        None => true,
+        Some(_) => false,
+    };
+    let port_part = match port_opt {
+        Some(p) if !drop_port => format!(":{p}"),
+        _ => String::new(),
+    };
+
+    let mut path = if path_raw.is_empty() {
+        "/".to_string()
+    } else {
+        path_raw.to_string()
+    };
+    if path.len() > 1 && path.ends_with('/') {
+        path.pop();
+    }
+
+    let origin = format!("{scheme}://{host}{port_part}");
+    if path == "/" && query.is_empty() {
+        format!("{origin}/")
+    } else {
+        format!("{origin}{path}{query}")
+    }
+}
+
+fn split_http_authority_path(hier: &str) -> Option<(&str, &str)> {
+    if hier.starts_with('[') {
+        let end = hier.find(']')?;
+        let mut i = end + 1;
+        if hier.as_bytes().get(i) == Some(&b':') {
+            i += 1;
+            let port_start = i;
+            while i < hier.len() && hier.as_bytes()[i].is_ascii_digit() {
+                i += 1;
+            }
+            if i == port_start {
+                return None;
+            }
+        }
+        if i == hier.len() {
+            return Some((hier, ""));
+        }
+        if hier.as_bytes().get(i) == Some(&b'/') {
+            return Some((&hier[..i], &hier[i..]));
+        }
+        return None;
+    }
+    match hier.find('/') {
+        Some(i) => Some((&hier[..i], &hier[i..])),
+        None => Some((hier, "")),
+    }
+}
+
+fn split_http_host_port(authority: &str) -> Option<(&str, Option<&str>)> {
+    if authority.starts_with('[') {
+        let end = authority.find(']')?;
+        let host = &authority[..=end];
+        let after = &authority[end + 1..];
+        if after.is_empty() {
+            return Some((host, None));
+        }
+        let port = after.strip_prefix(':')?;
+        if port.is_empty() || !port.bytes().all(|b| b.is_ascii_digit()) {
+            return None;
+        }
+        return Some((host, Some(port)));
+    }
+    match authority.rfind(':') {
+        Some(i) => {
+            let port = &authority[i + 1..];
+            if port.is_empty() || !port.bytes().all(|b| b.is_ascii_digit()) {
+                return None;
+            }
+            Some((&authority[..i], Some(port)))
+        }
+        None => Some((authority, None)),
+    }
+}
+
+/// Look up `href` in a dead-URL map: exact key, then [`path_normalize_http_href`].
+/// Missing / non-object map → `null` (CleverScript must not throw).
+pub fn path_lookup_http_href(map: &Value, href: &str) -> Value {
+    let Value::Object(o) = map else {
+        return Value::Null;
+    };
+    if let Some(v) = o.get(href) {
+        if matches!(v, Value::Object(_)) {
+            return v.clone();
+        }
+    }
+    let n = path_normalize_http_href(href);
+    if let Some(v) = o.get(&n) {
+        if matches!(v, Value::Object(_)) {
+            return v.clone();
+        }
+    }
+    Value::Null
+}
+
 /// Split text on `.` `!` `?` into trimmed sentences (TTS chunking).
 pub fn util_split_sentences(text: &str) -> Vec<String> {
     let mut out = Vec::new();
@@ -687,6 +845,22 @@ fn path_module() -> Value {
             let src = arg_str(args, 0).unwrap_or_default();
             let map = args.get(1).cloned().unwrap_or(Value::Null);
             Ok(Value::String(path_portrait_sibling_if_present(&src, &map)))
+        }),
+    );
+    m.insert(
+        "normalizeHttpHref".into(),
+        Value::Native(|args| {
+            Ok(Value::String(path_normalize_http_href(
+                &arg_str(args, 0).unwrap_or_default(),
+            )))
+        }),
+    );
+    m.insert(
+        "lookupHttpHref".into(),
+        Value::Native(|args| {
+            let map = args.get(0).cloned().unwrap_or(Value::Null);
+            let href = arg_str(args, 1).unwrap_or_default();
+            Ok(path_lookup_http_href(&map, &href))
         }),
     );
     named_exports(m)
@@ -1938,5 +2112,86 @@ mod tests {
         let (chunk2, next2) = util_take_sentence_chunk(&parts, next, 700);
         assert_eq!(chunk2, "Three? Tail");
         assert_eq!(next2, 4);
+    }
+
+    #[test]
+    fn normalize_http_href_matches_node_checker() {
+        assert_eq!(
+            path_normalize_http_href("https://Example.COM/Path#frag"),
+            "https://example.com/Path"
+        );
+        assert_eq!(
+            path_normalize_http_href("https://example.com/foo/"),
+            "https://example.com/foo"
+        );
+        assert_eq!(
+            path_normalize_http_href("https://example.com"),
+            "https://example.com/"
+        );
+        assert_eq!(
+            path_normalize_http_href("https://example.com/"),
+            "https://example.com/"
+        );
+        assert_eq!(
+            path_normalize_http_href("https://example.com:443/a?x=1"),
+            "https://example.com/a?x=1"
+        );
+        assert_eq!(
+            path_normalize_http_href("http://example.com:80/a"),
+            "http://example.com/a"
+        );
+        assert_eq!(
+            path_normalize_http_href("http://www.example.com/a"),
+            "http://www.example.com/a"
+        );
+        assert_eq!(path_normalize_http_href("/foo"), "/foo");
+        assert_eq!(path_normalize_http_href("mailto:a@b.c"), "mailto:a@b.c");
+        assert_eq!(path_normalize_http_href("https://"), "https://");
+        assert_eq!(
+            path_normalize_http_href("https://example.com/?q=1"),
+            "https://example.com/?q=1"
+        );
+        assert_eq!(
+            path_normalize_http_href("http://example.com:8080/a"),
+            "http://example.com:8080/a"
+        );
+    }
+
+    #[test]
+    fn lookup_http_href_exact_then_normalize_and_miss() {
+        let mut inner = HashMap::new();
+        inner.insert("reason".into(), Value::String("http_404".into()));
+        inner.insert("status".into(), Value::Number(404.0));
+        let mut map = HashMap::new();
+        map.insert(
+            "https://example.com/gone".into(),
+            Value::Object(inner),
+        );
+        let map_v = Value::Object(map);
+
+        let hit = path_lookup_http_href(&map_v, "https://Example.COM/gone#x");
+        match hit {
+            Value::Object(o) => match o.get("reason") {
+                Some(Value::String(s)) => assert_eq!(s, "http_404"),
+                other => panic!("reason {other:?}"),
+            },
+            other => panic!("{other:?}"),
+        }
+
+        let exact = path_lookup_http_href(&map_v, "https://example.com/gone");
+        assert!(matches!(exact, Value::Object(_)));
+
+        assert!(matches!(
+            path_lookup_http_href(&Value::Null, "https://example.com/gone"),
+            Value::Null
+        ));
+        assert!(matches!(
+            path_lookup_http_href(&map_v, "https://example.com/live"),
+            Value::Null
+        ));
+        assert!(matches!(
+            path_lookup_http_href(&Value::Array(vec![]), "https://example.com/gone"),
+            Value::Null
+        ));
     }
 }

@@ -168,6 +168,96 @@ export default function App() {
 }
 
 #[test]
+fn relay_path_normalize_lookup_http_href() {
+    let src = r#"
+import { normalizeHttpHref, lookupHttpHref } from '@relay/path';
+export default function App() {
+  const raw = '{"https://example.com/gone":{"reason":"http_404","status":404}}'
+  const map = JSON.parse(raw)
+  const hit = lookupHttpHref(map, "https://Example.COM/gone#x");
+  const miss = lookupHttpHref(null, "https://example.com/x");
+  const empty = lookupHttpHref({}, "https://example.com/gone");
+  let reason = "miss";
+  if (hit) {
+    reason = hit.reason;
+  }
+  let missFlag = "n";
+  if (miss) {
+    missFlag = "y";
+  }
+  let emptyFlag = "n";
+  if (empty) {
+    emptyFlag = "y";
+  }
+  return normalizeHttpHref("https://Example.COM/Path#frag")
+    + "|" + normalizeHttpHref("https://example.com/foo/")
+    + "|" + normalizeHttpHref("https://example.com")
+    + "|" + normalizeHttpHref("https://example.com/")
+    + "|" + normalizeHttpHref("https://example.com:443/a?x=1")
+    + "|" + normalizeHttpHref("http://example.com:80/a")
+    + "|" + normalizeHttpHref("http://www.example.com/a")
+    + "|" + normalizeHttpHref("/foo")
+    + "|" + normalizeHttpHref("mailto:a@b.c")
+    + "|" + normalizeHttpHref("https://")
+    + "|" + reason
+    + "|" + missFlag
+    + "|" + emptyFlag;
+}
+"#;
+    let program = parse(src).expect("parse");
+    let analysis = analyze(&program).expect("analyze");
+    struct RelayHost;
+    impl Host for RelayHost {
+        fn fetch(&self, url: &str, _: Option<&Value>) -> Result<Value, String> {
+            Ok(host_fetch_object(true, 200.0, format!("body:{url}"), None))
+        }
+        fn navigate(&self, _: &str) -> Result<(), String> {
+            Ok(())
+        }
+        fn create_element(
+            &self,
+            tag: &str,
+            props: &Value,
+            children: &[Value],
+        ) -> Result<Value, String> {
+            Ok(Value::Object(
+                [
+                    ("type".into(), Value::String("element".into())),
+                    ("tag".into(), Value::String(tag.into())),
+                    ("props".into(), props.clone()),
+                    ("children".into(), Value::Array(children.to_vec())),
+                ]
+                .into_iter()
+                .collect(),
+            ))
+        }
+        fn load_module(&self, path: &str) -> Result<Value, String> {
+            relay_runtime::relay_modules::try_load_relay_module(path)
+                .ok_or_else(|| format!("missing {path}"))
+        }
+        fn log(&self, _: &str, _: &str) {}
+    }
+    let host: HostHandle = Rc::new(RefCell::new(RelayHost));
+    let mut rt = Runtime::new(program, analysis).with_host(host);
+    inject_standard_builtins(&rt);
+    let exports = rt.get_module_exports().expect("exports");
+    let f = match exports {
+        Value::Object(o) => o.get("default").cloned().unwrap(),
+        _ => panic!(),
+    };
+    let out = rt.call_value(&f, &[]).expect("call");
+    match out {
+        Value::String(s) => {
+            assert_eq!(
+                s,
+                "https://example.com/Path|https://example.com/foo|https://example.com/|https://example.com/|https://example.com/a?x=1|http://example.com/a|http://www.example.com/a|/foo|mailto:a@b.c|https://|http_404|n|n"
+            );
+        }
+        other => panic!("{other:?}"),
+    }
+}
+
+#[test]
 fn tip_cached_get_dedupes_fetch() {
     clear_tip_get_cache();
     let host = MockHost::new();
