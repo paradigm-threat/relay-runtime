@@ -27,9 +27,9 @@ thread_local! {
     static LOCAL_STORAGE: RefCell<std::collections::HashMap<String, String>> = RefCell::new(std::collections::HashMap::new());
     /// Host for lazy() during first run when RunState not yet set.
     pub(crate) static HOST_FOR_LAZY: RefCell<Option<HostHandle>> = RefCell::new(None);
-    /// Request-local tip blob GET cache (`@relay/ui` cachedGet / `@relay/catalog` loadNavIndex).
+    /// Request-local tip blob GET cache (`@relay/ui` cachedGet).
     static TIP_GET_CACHE: RefCell<HashMap<String, String>> = RefCell::new(HashMap::new());
-    /// Parsed `nav-index.txt` rows keyed by text hash (warm across loadNavIndex callers / remounts).
+    /// Parsed `nav-index.txt` rows keyed by text hash (legacy parse helper; park catalog is QUERY).
     static NAV_INDEX_PARSED: RefCell<Option<(u64, std::rc::Rc<Vec<Value>>)>> =
         RefCell::new(None);
     /// Extra keys merged onto CleverScript `globalThis` at [`inject_standard_builtins`]

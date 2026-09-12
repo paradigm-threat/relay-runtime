@@ -13,7 +13,7 @@ When CleverScript runs as **`server.hooks.*`** modules (`.cs`), the relay-gatewa
 - **`@relay/git`** — `readFile`, `readFileBase64`
 - **`@relay/search/sqlite`** / **`@relay/search/redb`** — `search(ctx)` for QUERY (Rust FTS / filter); optional `config` path (default tip `search.yaml`); preferred over returning `{ plugin: "sqlite" }`
 - On GET / raster resize paths only: **`@relay/image`**, **`@relay/ipfs`**, **`@relay/md`**
-- Always (server + client SSR/WASM): **`@relay/util`**, **`@relay/path`**, **`@relay/date`**, **`@relay/catalog`**, **`@relay/ui`** — tip ergonomics (sort/take, basename, ChangeLog date formats, nav-index parse/tree, Link/RadioTabs/cachedGet)
+- Always (server + client SSR/WASM): **`@relay/util`**, **`@relay/path`**, **`@relay/date`**, **`@relay/catalog`**, **`@relay/ui`** — tip ergonomics (sort/take, basename, ChangeLog date formats, dir tree, Link/RadioTabs/cachedGet)
 
 Top-level **`import { … } from '@relay/…'`**. The global **`Relay`** is **`null`**; prefer imports for new scripts.
 
@@ -22,7 +22,7 @@ Top-level **`import { … } from '@relay/…'`**. The global **`Relay`** is **`n
 | `@relay/util` | `sortBy`, `take`, `prop`, `omitUndefined`, `slugify`, `uniqueId`, `includes`, `splitSentences`, `takeSentenceChunk` |
 | `@relay/path` | `basename`, `dirname`, `extname`, `join`, `split`, `normalizeRel`, `resolveRel`, `parentDir`, `siteHref`, `resolveEmbedSrc`, `resolveAssetUrl`, `rewriteMarkdownAssetUrls`, `portraitSiblingSrc`, `repoRelFromMediaSrc`, `safeImgDomId`, `readHashImgSrc`, `galleryImgHash`, `galleryDisplaySrc`, `portraitSiblingIfPresent`, `normalizeHttpHref`, `lookupHttpHref` |
 | `@relay/date` | `formatTiny` / `formatLong` / `formatFeed` / `sameDay` |
-| `@relay/catalog` | `parseNavIndexTxt`, `loadNavIndex`, `loadDirTree`, `extractMarkdownHeadings`, `contentKind`, `buildDirTree`, `dirExpandPaths`, `nestTocItems`, `publishedFromBlogPath`, `neighborPaths`, `isFeelingLuckyCandidate`, `pickFeelingLuckyPath` |
+| `@relay/catalog` | `parseNavIndexTxt`, `extractMarkdownHeadings`, `contentKind`, `buildDirTree`, `dirExpandPaths`, `nestTocItems`, `publishedFromBlogPath`, `neighborPaths`, `isFeelingLuckyCandidate`, `pickFeelingLuckyPath` |
 | `@relay/ui` | `cachedGet`, `Link`, `RadioTabs`, `safeProps` / `omitUndefined` |
 | `@relay/tts` | `synthesize({ text, voiceId?, baseUrl?, endpoints? })` → data URL; `AudioPlayer` → `relay-audio-player` |
 
@@ -263,7 +263,7 @@ When writing CleverScript for parked tips (SSR + hydrate):
 9. **Avoid unary minus after `return`** — use `return 0 - 1` or `return (-1)`, not `return -1`.
 10. **Shared module state** — prefer `export const api = createApi()` where methods close over locals inside `createApi()` (works). Module-level `const` read from *nested* `function` bodies is unreliable; do not rely on that.
 11. **Park SSR tiers (normative tip doc)** — **P0** article + TOC and **P1** static chrome on SSR; **P2 catalog** (DirNav / ChangeLog / article lists) and **P3** interactive **forbidden** on SSR — placeholders until `isClientLive()`. Do **not** SSR catalog rows “with a better cache”: tip-OID HTML cache misses would reintroduce multi-second cold renders; same-Host QUERY during SSR deadlocks the gateway worker. Canon: park `hooks/CLEVERSCRIPT_TIP.md`.
-12. **Catalog warm on hydrate** — `@relay/catalog.loadNavIndex` uses request-local `tip_cached_get('/nav-index.txt')` + `tip_cached_nav_index_rows` (one parse per tip blob text per RunState session). Tip modules may module-warm sidecars (e.g. `changelog-thumbs.json`). Prefer that over per-component re-parse or SSR QUERY.
+12. **Catalog warm on hydrate** — park catalog surfaces QUERY the index when `isClientLive()` (module-warm one HTTP per spec). Do not GET `nav-index.txt`. Same-Host QUERY during site-shell SSR remains forbidden.
 13. **`html[data-pt-hydrated]` / `data-pt-live-phase`** — progressive hydrate 0→4 (shell → catalog → feeds → interactive). Canon: [`docs/HYDRATE_PHASES.md`](HYDRATE_PHASES.md). Tips use `isClientLivePhase(n)`; hosts advance on idle (web rAF+ric, Android Choreographer).
 
 ---
