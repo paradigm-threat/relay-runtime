@@ -38,3 +38,4 @@ Uniform readiness ladder so **no host locks the UI thread** rebuilding the full 
 - Gate catalog on `isClientLivePhase(2)`, feeds on `(3)`, heavy widgets on `(4)`.
 - Do **not** use tip `setState` to stagger phases — that remounts the shell.
 - Keep header links as real absolute `<a>` so phase 0 stays navigable.
+- **DeferredMarkdown:** prefetch tip `src` at phase **≥2**; fill at **≥3** as a sibling island (stable `section.pt-deferred-md` / `aria-label="Deferred section"`). Long single-file tips may auto-split to lead + virtual tail — never wipe SSR for size.
