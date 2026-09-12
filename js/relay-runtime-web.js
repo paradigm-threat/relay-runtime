@@ -148,8 +148,22 @@ function applyInjectedCss(container) {
 /**
  * Mirror CleverScript/WASM theme name onto <html class="light|dark"> for system dual CSS.
  * Park tips that flip appearance without setCurrentTheme store the choice on
- * data-pt-theme — prefer that so catalog remounts do not force theme.yaml light.
+ * data-pt-theme (+ localStorage `pt-theme`) — prefer those so catalog remounts /
+ * soft-hydrate do not force theme.yaml light and tip chrome stays consistent
+ * with css_for_web_system (prefers-color-scheme + html.dark / html.light).
  */
+function applyHtmlThemeClass(root, name) {
+  if (!root || (name !== 'light' && name !== 'dark')) return;
+  try {
+    root.setAttribute('class', name);
+  } catch (_) {
+    try {
+      root.classList.remove('light', 'dark');
+      root.classList.add(name);
+    } catch (_2) { /* ignore */ }
+  }
+}
+
 function syncHtmlThemeClass(target) {
   if (typeof document === 'undefined') return;
   const root = target || document.documentElement;
@@ -160,15 +174,24 @@ function syncHtmlThemeClass(target) {
     tip = '';
   }
   if (tip === 'light' || tip === 'dark') {
-    try {
-      root.setAttribute('class', tip);
-    } catch (_) {
-      /* classList optional */
-      try {
-        root.classList.remove('light', 'dark');
-        root.classList.add(tip);
-      } catch (_2) { /* ignore */ }
+    applyHtmlThemeClass(root, tip);
+    return;
+  }
+  // Soft-hydrate often never remounts tip ThemeToggle useEffect — restore from
+  // localStorage and stamp data-pt-theme so later applyInjectedCss remounts keep it.
+  let stored = '';
+  try {
+    if (typeof localStorage !== 'undefined') {
+      stored = String(localStorage.getItem('pt-theme') || '').trim();
     }
+  } catch (_) {
+    stored = '';
+  }
+  if (stored === 'light' || stored === 'dark') {
+    try {
+      root.setAttribute('data-pt-theme', stored);
+    } catch (_) { /* optional */ }
+    applyHtmlThemeClass(root, stored);
     return;
   }
   let name = '';
@@ -180,8 +203,7 @@ function syncHtmlThemeClass(target) {
     return;
   }
   if (name !== 'light' && name !== 'dark') return;
-  root.classList.remove('light', 'dark');
-  root.classList.add(name);
+  applyHtmlThemeClass(root, name);
 }
 
 /**
