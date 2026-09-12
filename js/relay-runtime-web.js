@@ -1322,7 +1322,7 @@ export function replaceSsrPlaceholdersFromVnode(container, vnode, invokeHandler,
   };
   container.querySelectorAll(SSR_PLACEHOLDER_SELECTORS).forEach(add);
   // Re-upgrade already-filled islands on later phases (markers removed).
-  ;['Directory', 'Change log', 'Auto index', 'Deferred section'].forEach((label) => {
+  ;['Site directory', 'Directory', 'Change log', 'Auto index', 'Deferred section'].forEach((label) => {
     container.querySelectorAll(`[aria-label="${cssEscapeIdent(label)}"]`).forEach(add);
   });
   if (!targets.length) return false;

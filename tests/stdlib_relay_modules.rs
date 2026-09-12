@@ -58,7 +58,7 @@ fn relay_path_util_modules() {
 import { basename, join, normalizeRel, resolveRel, parentDir, siteHref, resolveAssetUrl, rewriteMarkdownAssetUrls, portraitSiblingSrc, repoRelFromMediaSrc, safeImgDomId, readHashImgSrc, galleryImgHash, galleryDisplaySrc, portraitSiblingIfPresent } from '@relay/path';
 import { take, sortBy, slugify, uniqueId, includes, splitSentences, takeSentenceChunk } from '@relay/util';
 import { formatTiny } from '@relay/date';
-import { neighborPaths, isFeelingLuckyCandidate, pickFeelingLuckyPath } from '@relay/catalog';
+import { neighborPaths, isFeelingLuckyCandidate, pickFeelingLuckyPath, buildDirTree, dirExpandPaths, nestTocItems } from '@relay/catalog';
 export default function App() {
   const rows = [{ path: 'b.md', _updated: '2020-01-01' }, { path: 'a.md', _updated: '2021-01-01' }];
   const sorted = sortBy(rows, '_updated', true);
@@ -70,6 +70,9 @@ export default function App() {
   const map = { yes: true };
   const sents = splitSentences('Hi. Bye!');
   const chunk = takeSentenceChunk(sents, 0, 20);
+  const dtree = buildDirTree([{ path: 'history/a.md' }, { path: 'history/chronology/b.md' }]);
+  const dpaths = dirExpandPaths('history/chronology/b.md');
+  const tocNest = nestTocItems([{ id: 'w', title: 'W', level: 1 }, { id: 's', title: 'S', level: 2 }]);
   return basename(join(['docs', 'x.md']))
     + '|' + take(sorted, 1)[0].path
     + '|' + formatTiny('2026-07-18T00:00:00Z')
@@ -95,7 +98,11 @@ export default function App() {
     + '|' + portraitSiblingIfPresent('/a/b.png', map)
     + '|' + sents.length
     + '|' + chunk.text
-    + '|' + chunk.next;
+    + '|' + chunk.next
+    + '|' + dtree.count
+    + '|' + dtree.folders[0].path
+    + '|' + dpaths[1]
+    + '|' + tocNest[0].children[0].id;
 }
 "#;
     let program = parse(src).expect("parse");
@@ -161,7 +168,7 @@ export default function App() {
             assert!(s.contains("|img--a-png|"), "{s}");
             assert!(s.contains("|/z.png|img=/z.png|/hi.png|"), "{s}");
             // map has no matching repo-rel key → empty invent (positive case is unit-tested)
-            assert!(s.contains("|/hi.png||2|Hi. Bye!|2"), "{s}");
+            assert!(s.contains("|/hi.png||2|Hi. Bye!|2|2|history|history/chronology|s"), "{s}");
         }
         other => panic!("{other:?}"),
     }

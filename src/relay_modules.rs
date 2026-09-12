@@ -1216,55 +1216,174 @@ pub fn published_from_blog_path(path: &str) -> String {
 }
 
 /// Build nested folder tree as arrays (CS-friendly, no computed keys in tip).
+/// Each folder has `name`, `path`, `count` (descendant files), `files`, `folders`.
 pub fn build_dir_tree(rows: &[Value]) -> Value {
     #[derive(Default)]
     struct Node {
         files: Vec<Value>,
         folders: HashMap<String, Node>,
     }
+    fn skip_dir_leaf(name: &str) -> bool {
+        if name == "page.md" || name == "page.mdx" {
+            return true;
+        }
+        if name.starts_with('_') {
+            return true;
+        }
+        name.ends_with(".auto.md")
+    }
     fn insert(node: &mut Node, parts: &[&str], row: &Value) {
         if parts.is_empty() {
             return;
         }
         if parts.len() == 1 {
-            node.files.push(row.clone());
+            if !skip_dir_leaf(parts[0]) {
+                node.files.push(row.clone());
+            }
             return;
         }
         let child = node.folders.entry(parts[0].to_string()).or_default();
         insert(child, &parts[1..], row);
     }
-    fn to_value(name: &str, node: Node) -> Value {
+    fn to_value(name: &str, path: &str, node: Node) -> (Value, usize) {
         let mut folder_list: Vec<(String, Node)> = node.folders.into_iter().collect();
         folder_list.sort_by(|a, b| a.0.cmp(&b.0));
-        let folders: Vec<Value> = folder_list
-            .into_iter()
-            .map(|(n, child)| to_value(&n, child))
-            .collect();
+        let mut folders: Vec<Value> = Vec::new();
+        let mut count = node.files.len();
+        for (n, child) in folder_list {
+            let child_path = if path.is_empty() {
+                n.clone()
+            } else {
+                format!("{path}/{n}")
+            };
+            let (val, child_count) = to_value(&n, &child_path, child);
+            count += child_count;
+            folders.push(val);
+        }
+        let mut files = node.files;
+        files.sort_by(|a, b| row_path_str(a).cmp(&row_path_str(b)));
         let mut o = HashMap::new();
         o.insert("name".into(), Value::String(name.into()));
-        o.insert("files".into(), Value::Array(node.files));
+        o.insert("path".into(), Value::String(path.into()));
+        o.insert("count".into(), Value::Number(count as f64));
+        o.insert("files".into(), Value::Array(files));
         o.insert("folders".into(), Value::Array(folders));
-        Value::Object(o)
+        (Value::Object(o), count)
     }
     let mut root = Node::default();
     for row in rows {
-        let path = match row {
-            Value::Object(o) => o
-                .get("path")
-                .and_then(|v| match v {
-                    Value::String(s) => Some(s.as_str()),
-                    _ => None,
-                })
-                .unwrap_or(""),
-            _ => "",
-        };
+        let path = row_path_str(row);
         if path.is_empty() {
             continue;
         }
         let parts: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
         insert(&mut root, &parts, row);
     }
-    to_value("", root)
+    to_value("", "", root).0
+}
+
+/// Ancestor folder paths for Directory expand-to-current (no filename leaf).
+/// Strips leading slashes only — does not map `/` to `README.md`.
+pub fn dir_expand_paths(rel: &str) -> Value {
+    let mut p = rel.trim().to_string();
+    while p.starts_with('/') {
+        p = p[1..].to_string();
+    }
+    let parts: Vec<&str> = p.split('/').filter(|s| !s.is_empty()).collect();
+    if parts.is_empty() {
+        return Value::Array(vec![]);
+    }
+    let last = parts[parts.len() - 1];
+    let end = if last.contains('.') {
+        parts.len() - 1
+    } else {
+        parts.len()
+    };
+    let mut out: Vec<Value> = Vec::new();
+    let mut acc = String::new();
+    for part in parts.iter().take(end) {
+        if !acc.is_empty() {
+            acc.push('/');
+        }
+        acc.push_str(part);
+        out.push(Value::String(acc.clone()));
+    }
+    Value::Array(out)
+}
+
+struct TocNestNode {
+    id: String,
+    title: String,
+    level: u32,
+    children: Vec<TocNestNode>,
+}
+
+fn toc_nest_to_value(node: TocNestNode) -> Value {
+    let children: Vec<Value> = node.children.into_iter().map(toc_nest_to_value).collect();
+    let mut o = HashMap::new();
+    o.insert("id".into(), Value::String(node.id));
+    o.insert("title".into(), Value::String(node.title));
+    o.insert("level".into(), Value::Number(node.level as f64));
+    o.insert("children".into(), Value::Array(children));
+    Value::Object(o)
+}
+
+/// Nest flat `{id,title,level}` TOC rows into a heading tree (old-site DynamicIndex).
+pub fn nest_toc_items(items: &[Value]) -> Value {
+    fn close_until(stack: &mut Vec<TocNestNode>, roots: &mut Vec<TocNestNode>, level: u32) {
+        while let Some(top) = stack.last() {
+            if top.level < level {
+                break;
+            }
+            let finished = stack.pop().unwrap();
+            if let Some(parent) = stack.last_mut() {
+                parent.children.push(finished);
+            } else {
+                roots.push(finished);
+            }
+        }
+    }
+
+    let mut roots: Vec<TocNestNode> = Vec::new();
+    let mut stack: Vec<TocNestNode> = Vec::new();
+    for item in items {
+        let (id, title, level) = match item {
+            Value::Object(o) => {
+                let id = match o.get("id") {
+                    Some(Value::String(s)) => s.clone(),
+                    _ => String::new(),
+                };
+                let title = match o.get("title") {
+                    Some(Value::String(s)) => s.clone(),
+                    _ => String::new(),
+                };
+                let mut level = match o.get("level") {
+                    Some(Value::Number(n)) => *n as u32,
+                    _ => 1,
+                };
+                if level < 1 {
+                    level = 1;
+                }
+                if level > 6 {
+                    level = 6;
+                }
+                (id, title, level)
+            }
+            _ => continue,
+        };
+        if id.is_empty() {
+            continue;
+        }
+        close_until(&mut stack, &mut roots, level);
+        stack.push(TocNestNode {
+            id,
+            title,
+            level,
+            children: Vec::new(),
+        });
+    }
+    close_until(&mut stack, &mut roots, 0);
+    Value::Array(roots.into_iter().map(toc_nest_to_value).collect())
 }
 
 fn row_path_str(row: &Value) -> String {
@@ -1587,6 +1706,27 @@ fn catalog_module() -> Value {
         Value::Native(|args| {
             let rows = arg_arr(args, 0).unwrap_or_default();
             Ok(build_dir_tree(&rows))
+        }),
+    );
+    m.insert(
+        "loadDirTree".into(),
+        Value::Native(|_args| {
+            let text = tip_cached_get("/nav-index.txt").unwrap_or_default();
+            let warmed = tip_cached_nav_index_rows(&text);
+            Ok(build_dir_tree(&warmed))
+        }),
+    );
+    m.insert(
+        "dirExpandPaths".into(),
+        Value::Native(|args| {
+            Ok(dir_expand_paths(&arg_str(args, 0).unwrap_or_default()))
+        }),
+    );
+    m.insert(
+        "nestTocItems".into(),
+        Value::Native(|args| {
+            let items = arg_arr(args, 0).unwrap_or_default();
+            Ok(nest_toc_items(&items))
         }),
     );
     m.insert(
@@ -1981,6 +2121,7 @@ fn tts_module() -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::HashMap;
 
     #[test]
     fn path_and_nav_parse() {
@@ -1989,6 +2130,92 @@ mod tests {
         assert_eq!(rows.len(), 1);
         assert_eq!(content_kind("blog/x.md"), "blog");
         assert!(!format_tiny("2026-07-18T12:00:00Z").is_empty());
+    }
+
+    #[test]
+    fn dir_tree_count_path_and_expand() {
+        let rows = parse_nav_index_txt(
+            "history/a.md\tA\nhistory/chronology/b.md\tB\nhistory/page.md\tHub\ninfluence/c.md\tC\n",
+        );
+        let tree = build_dir_tree(&rows);
+        let obj = match tree {
+            Value::Object(o) => o,
+            _ => panic!("tree"),
+        };
+        assert_eq!(obj.get("count"), Some(&Value::Number(3.0)));
+        let folders = match obj.get("folders") {
+            Some(Value::Array(a)) => a,
+            _ => panic!("folders"),
+        };
+        assert_eq!(folders.len(), 2);
+        let hist = match &folders[0] {
+            Value::Object(o) => o,
+            _ => panic!("history"),
+        };
+        assert_eq!(hist.get("name"), Some(&Value::String("history".into())));
+        assert_eq!(hist.get("path"), Some(&Value::String("history".into())));
+        assert_eq!(hist.get("count"), Some(&Value::Number(2.0)));
+        let hist_files = match hist.get("files") {
+            Some(Value::Array(a)) => a,
+            _ => panic!("history files"),
+        };
+        assert_eq!(hist_files.len(), 1);
+        assert_eq!(
+            dir_expand_paths("/history/chronology/b.md"),
+            dir_expand_paths("history/chronology/b.md")
+        );
+        assert_eq!(dir_expand_paths("/"), Value::Array(vec![]));
+        let expand = dir_expand_paths("history/chronology/b.md");
+        assert_eq!(
+            expand,
+            Value::Array(vec![
+                Value::String("history".into()),
+                Value::String("history/chronology".into()),
+            ])
+        );
+        assert_eq!(dir_expand_paths("page.md"), Value::Array(vec![]));
+    }
+
+    #[test]
+    fn nest_toc_items_builds_heading_tree() {
+        let items = vec![
+            heading_value_for_test("welcome", "Welcome", 1),
+            heading_value_for_test("proj", "Project", 2),
+            heading_value_for_test("ta", "TA", 3),
+            heading_value_for_test("cats", "Categories", 2),
+        ];
+        let tree = nest_toc_items(&items);
+        let roots = match tree {
+            Value::Array(a) => a,
+            _ => panic!("roots"),
+        };
+        assert_eq!(roots.len(), 1);
+        let welcome = match &roots[0] {
+            Value::Object(o) => o,
+            _ => panic!("welcome"),
+        };
+        let kids = match welcome.get("children") {
+            Some(Value::Array(a)) => a,
+            _ => panic!("children"),
+        };
+        assert_eq!(kids.len(), 2);
+        let proj = match &kids[0] {
+            Value::Object(o) => o,
+            _ => panic!("proj"),
+        };
+        let nested = match proj.get("children") {
+            Some(Value::Array(a)) => a,
+            _ => panic!("nested"),
+        };
+        assert_eq!(nested.len(), 1);
+    }
+
+    fn heading_value_for_test(id: &str, title: &str, level: u32) -> Value {
+        let mut o = HashMap::new();
+        o.insert("id".into(), Value::String(id.into()));
+        o.insert("title".into(), Value::String(title.into()));
+        o.insert("level".into(), Value::Number(level as f64));
+        Value::Object(o)
     }
 
     #[test]
