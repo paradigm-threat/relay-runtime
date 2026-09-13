@@ -732,6 +732,9 @@ pub fn invoke_handler(id: u32) -> Result<Value, RuntimeError> {
 /// falls back to [`get_host_for_lazy`] so Function overrides can still run. Function values
 /// carry their own env; an empty program is enough for `call_value`.
 pub fn invoke_handler_value(f: &Value, args: &[Value]) -> Result<Value, RuntimeError> {
+    if crate::ssr_cancel::ssr_is_cancelled() {
+        return Err(RuntimeError::Runtime("SSR cancelled".into()));
+    }
     let from_state = RUN_STATE.with(|r| -> Option<Result<Value, RuntimeError>> {
         let state = r.try_borrow().ok()?;
         let rs = state.as_ref()?;

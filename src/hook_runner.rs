@@ -264,15 +264,24 @@ fn run_hook_to_vnode_stable_inner(
     if reset {
         reset_hook_session();
     }
+    if crate::ssr_cancel::ssr_is_cancelled() {
+        return Err("SSR cancelled".into());
+    }
     let composite = build_composite(host, modules, hooks_manifest);
     let mut last = run_one_pass(source, composite.clone(), theme_yaml, platform)?;
     let mut passes: u32 = 1;
     for _ in 0..16 {
+        if crate::ssr_cancel::ssr_is_cancelled() {
+            return Err("SSR cancelled".into());
+        }
         if !consume_render_requested() {
             break;
         }
         last = run_one_pass(source, composite.clone(), theme_yaml, platform)?;
         passes += 1;
+    }
+    if crate::ssr_cancel::ssr_is_cancelled() {
+        return Err("SSR cancelled".into());
     }
     consume_render_requested();
     Ok(HookRunResult {

@@ -94,6 +94,9 @@ fn is_callable(v: &Value) -> bool {
 }
 
 fn call_override_component(comp: &Value, props: Value) -> Result<Value, String> {
+    if crate::ssr_cancel::ssr_is_cancelled() {
+        return Err("SSR cancelled".into());
+    }
     match comp {
         Value::Native(f) => f(&[props]),
         Value::NativeFn(f) => f.0(&[props]),
@@ -107,6 +110,10 @@ fn md_node_to_value(
     anchor_on_click: Option<&Value>,
     overrides: Option<&HashMap<String, Value>>,
 ) -> Value {
+    // Abort subtree walk quickly so wall-clock cancel frees the SSR permit.
+    if crate::ssr_cancel::ssr_is_cancelled() {
+        return Value::Null;
+    }
     match node {
         Node::Text { content } => Value::String(content.clone()),
         Node::Element {

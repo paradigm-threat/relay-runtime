@@ -14,6 +14,7 @@ pub mod lexer;
 pub mod markdown_host;
 pub mod relay_modules;
 pub mod session_theme;
+pub mod ssr_cancel;
 pub mod boot_shell_host;
 pub mod style_host;
 pub mod video_host;
@@ -51,6 +52,7 @@ pub use run_state::{
     register_handler, run_hook_persistent, set_cs_global_this_extra, set_host_for_lazy,
     tip_cached_get, tip_cached_nav_index_rows, with_isolated_hook_run,
 };
+pub use ssr_cancel::{install_ssr_cancel, signal_ssr_cancel, ssr_is_cancelled};
 pub use session_theme::{
     clear_session_theme, effective_theme_yaml, get_session_theme_yaml, looks_like_theme_yaml,
     set_session_theme_yaml,
