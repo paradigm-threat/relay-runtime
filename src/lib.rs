@@ -2,7 +2,8 @@
 //!
 //! Parses, executes, and renders client hooks (JS-like + JSX) for web and native.
 //!
-//! See docs/POLICY.md, docs/CLEVERSCRIPT.md, docs/TERMINOLOGY.md, and docs/ANDROID_WEB_TEST.md.
+//! See docs/POLICY.md, docs/CLEVERSCRIPT.md, docs/TERMINOLOGY.md, docs/PERF_FEATURE_FLAGS.md,
+//! and docs/ANDROID_WEB_TEST.md.
 
 pub mod analysis;
 pub mod ast;
@@ -12,6 +13,7 @@ pub mod host;
 pub mod html;
 pub mod lexer;
 pub mod markdown_host;
+pub mod perf_flags;
 pub mod relay_modules;
 pub mod session_theme;
 pub mod ssr_cancel;
@@ -52,7 +54,15 @@ pub use run_state::{
     register_handler, run_hook_persistent, set_cs_global_this_extra, set_host_for_lazy,
     tip_cached_get, tip_cached_nav_index_rows, with_isolated_hook_run,
 };
-pub use ssr_cancel::{install_ssr_cancel, signal_ssr_cancel, ssr_is_cancelled};
+pub use ssr_cancel::{
+    install_ssr_cancel, signal_ssr_cancel, ssr_cancel_installed, ssr_is_cancelled,
+};
+pub use perf_flags::{
+    array_host_builder, cached_get_prefer_markdown, clear_perf_flag_cache_for_tests,
+    cs_cancel_in_loops, fuse_ssr_serialize, is_ssr_thread, md_cancel_before_parse,
+    md_fragment_cache, md_nested_loud_fail, md_ssr_fast_path, md_ssr_skip_anchor_onclick,
+    md_stub_overrides_noop,
+};
 pub use session_theme::{
     clear_session_theme, effective_theme_yaml, get_session_theme_yaml, looks_like_theme_yaml,
     set_session_theme_yaml,

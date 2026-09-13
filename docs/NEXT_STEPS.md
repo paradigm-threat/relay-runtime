@@ -22,7 +22,8 @@ Ordered work aligned with [POLICY.md](POLICY.md): **no legacy**, **no hook trans
 4. **DOM / native host commit** — Versioned host API; [WEB_WASM_HOST.md](WEB_WASM_HOST.md).
 5. **Hooks** — `useEffect` dependency scheduling, `useCallback` memoization (needed for relay-template; fan-edits works with simplified semantics).
 6. **Integration tests** — Enable ignored Layout test; relay-template plugin hooks.
-7. **Docs** — Keep POLICY, CLEVERSCRIPT, TERMINOLOGY, and ANDROID_WEB_TEST in sync. Historical PLAN/phases live under `docs/archive/`.
+7. **Docs** — Keep POLICY, CLEVERSCRIPT, TERMINOLOGY, PERF_FEATURE_FLAGS, and ANDROID_WEB_TEST in sync. Historical PLAN/phases live under `docs/archive/`.
+8. **Perf flags** — `RELAY_PERF_*` in [`perf_flags.rs`](../src/perf_flags.rs); catalog [PERF_FEATURE_FLAGS.md](PERF_FEATURE_FLAGS.md). Wired: CS loop cancel, MD cancel-before-parse, SSR skip `anchorOnClick`. Reserved: MD SSR fast path, fragment cache, nested loud fail, fuse serialize.
 
 ---
 

@@ -68,7 +68,7 @@ Top-level **`import { … } from '@relay/…'`**. The global **`Relay`** is **`n
 - Length: `arr.length`
 - Index access: `arr[i]` (where `i` is a numeric variable or literal)
 - Methods: `map`, `filter`, `find`, `concat`, `slice`, `sort(compareFn?)` (sort/slice return **new** arrays)
-- Building arrays: prefer `concat` or spread; **no** `arr.push()` in core
+- Building arrays: prefer `concat` or spread; **no** `arr.push()` in core (language limit / immutable style — **not** a perf optimization). `concat` in a large loop is **O(n²)** (each call copies the array). For hundreds of rows, return a host-built array as-is or use `map`/`filter` once — see [PERF_FEATURE_FLAGS.md](PERF_FEATURE_FLAGS.md) (`array-host-builder`).
 
 ### 1.4 Operators
 

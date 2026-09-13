@@ -62,6 +62,9 @@ pub fn render_markdown_to_value_with_overrides(
     anchor_on_click: Option<&Value>,
     overrides: Option<&HashMap<String, Value>>,
 ) -> Value {
+    if crate::perf_flags::md_cancel_before_parse() && crate::ssr_cancel::ssr_is_cancelled() {
+        return Value::Null;
+    }
     let mut allowed = default_allowed_html_tags();
     if let Some(ov) = overrides {
         for k in ov.keys() {
@@ -74,7 +77,14 @@ pub fn render_markdown_to_value_with_overrides(
         allowed_tags: allowed,
     };
     let nodes = md2ast_parse(markdown, &options);
-    render_nodes_to_value(&nodes, anchor_props, anchor_on_click, overrides)
+    let skip_click = crate::perf_flags::is_ssr_thread()
+        && crate::perf_flags::md_ssr_skip_anchor_onclick();
+    let onclick = if skip_click {
+        None
+    } else {
+        anchor_on_click
+    };
+    render_nodes_to_value(&nodes, anchor_props, onclick, overrides)
 }
 
 fn element_value(tag: &str, props: HashMap<String, Value>, children: Vec<Value>) -> Value {
@@ -402,6 +412,34 @@ mod tests {
             }
         });
         assert!(found, "expected merged className on anchor");
+    }
+
+    #[test]
+    fn cancel_before_parse_returns_null() {
+        let f = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
+        crate::ssr_cancel::install_ssr_cancel(Some(f));
+        let v = render_markdown_to_value("# hi\n\nbody", None, None);
+        crate::ssr_cancel::install_ssr_cancel(None);
+        assert!(matches!(v, Value::Null));
+    }
+
+    #[test]
+    fn ssr_skip_anchor_onclick_omits_handler() {
+        let f = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        crate::ssr_cancel::install_ssr_cancel(Some(f));
+        let click = Value::Native(|_args: &[Value]| Ok(Value::Null));
+        let v = render_markdown_to_value("[x](/y)", None, Some(&click));
+        crate::ssr_cancel::install_ssr_cancel(None);
+        let vn = value_to_vnode_with_handlers(&v, &mut |_| 0);
+        let mut saw_click = false;
+        walk_vnode_each(&vn, &mut |a| {
+            if let VNode::Element { tag, props, .. } = a {
+                if tag == "a" && props.contains_key("onClick") {
+                    saw_click = true;
+                }
+            }
+        });
+        assert!(!saw_click, "SSR thread should skip anchorOnClick wrappers");
     }
 
     #[test]

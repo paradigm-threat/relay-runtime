@@ -20,6 +20,11 @@ pub fn install_ssr_cancel(flag: Option<Arc<AtomicBool>>) {
     });
 }
 
+/// True when this thread has an SSR cancel Arc installed (gateway `relay-ssr` worker).
+pub fn ssr_cancel_installed() -> bool {
+    CURRENT.with(|c| c.borrow().is_some())
+}
+
 /// True when this thread's installed cancel flag is set.
 pub fn ssr_is_cancelled() -> bool {
     CURRENT.with(|c| {
@@ -43,10 +48,12 @@ mod tests {
     fn install_and_signal() {
         let f = Arc::new(AtomicBool::new(false));
         install_ssr_cancel(Some(f.clone()));
+        assert!(ssr_cancel_installed());
         assert!(!ssr_is_cancelled());
         signal_ssr_cancel(&f);
         assert!(ssr_is_cancelled());
         install_ssr_cancel(None);
+        assert!(!ssr_cancel_installed());
         assert!(!ssr_is_cancelled());
     }
 }

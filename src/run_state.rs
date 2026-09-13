@@ -75,7 +75,20 @@ pub fn tip_cached_get(url: &str) -> Option<String> {
         return Some(hit);
     }
     let host = get_host_for_lazy()?;
-    let resp = host.borrow().fetch(url, None).ok()?;
+    let opts = if crate::perf_flags::cached_get_prefer_markdown() {
+        let mut headers = HashMap::new();
+        headers.insert(
+            "Accept".to_string(),
+            Value::String("text/markdown".to_string()),
+        );
+        let mut o = HashMap::new();
+        o.insert("method".to_string(), Value::String("GET".to_string()));
+        o.insert("headers".to_string(), Value::Object(headers));
+        Some(Value::Object(o))
+    } else {
+        None
+    };
+    let resp = host.borrow().fetch(url, opts.as_ref()).ok()?;
     let text = match resp {
         Value::Object(o) => match o.get("text") {
             Some(Value::String(s)) => s.clone(),
@@ -83,6 +96,13 @@ pub fn tip_cached_get(url: &str) -> Option<String> {
         },
         _ => String::new(),
     };
+    // Prefer-markdown path: reject HTML documents mistaken for tip blobs.
+    if crate::perf_flags::cached_get_prefer_markdown()
+        && text.len() > 20
+        && text.trim_start().starts_with('<')
+    {
+        return None;
+    }
     TIP_GET_CACHE.with(|c| {
         c.borrow_mut().insert(key, text.clone());
     });

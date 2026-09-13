@@ -39,12 +39,17 @@ The following are **historical** or **other products**—not part of the Relay h
 - **Option B** in [archive/PLAN.md](archive/PLAN.md) (compile hook language to JS for execution) — **not** a Relay target.
 - **Migration feature flags** (“WASM renderer until parity with old path”) — **no** old path; parity is **required** before cutover, not a long-lived dual stack.
 
+### Performance strategy flags (allowed)
+
+**Exception:** SSR/hydrate **performance** knobs may keep preferred and alternate strategies in tree behind named defaults / `RELAY_PERF_*` env. That is not a migration dual stack. Catalog and rules: [PERF_FEATURE_FLAGS.md](PERF_FEATURE_FLAGS.md).
+
 ---
 
 ## Related
 
 - [TERMINOLOGY.md](TERMINOLOGY.md) — client vs server hooks, `.relay.yaml`, why CleverScript
 - [CLEVERSCRIPT.md](CLEVERSCRIPT.md) — CleverScript language spec (supported subset, out-of-scope)
+- [PERF_FEATURE_FLAGS.md](PERF_FEATURE_FLAGS.md) — SSR/hydrate strategy catalog + `RELAY_PERF_*`
 - [WEB_WASM_HOST.md](WEB_WASM_HOST.md) — web embedding
 - [NEXT_STEPS.md](NEXT_STEPS.md) — ordered work
 - [archive/PLAN.md](archive/PLAN.md) — historical strategy

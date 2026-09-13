@@ -1051,6 +1051,14 @@ impl Runtime {
                             MAX_LOOP_ITERATIONS
                         )));
                     }
+                    if crate::perf_flags::cs_cancel_in_loops()
+                        && crate::ssr_cancel::ssr_is_cancelled()
+                    {
+                        self.env = prev_env;
+                        return Err(RuntimeError::Runtime(
+                            "SSR cancelled (loop abort)".to_string(),
+                        ));
+                    }
                     if let Some(t) = test {
                         let cond = self.eval_expr(t)?;
                         if !cond.is_truthy() {
@@ -1109,6 +1117,13 @@ impl Runtime {
                             "Loop exceeded {} iterations (possible infinite loop)",
                             MAX_LOOP_ITERATIONS
                         )));
+                    }
+                    if crate::perf_flags::cs_cancel_in_loops()
+                        && crate::ssr_cancel::ssr_is_cancelled()
+                    {
+                        return Err(RuntimeError::Runtime(
+                            "SSR cancelled (loop abort)".to_string(),
+                        ));
                     }
                     let block_env = Env::child(self.env.clone());
                     block_env
@@ -1307,6 +1322,13 @@ impl Runtime {
                             "Loop exceeded {} iterations (possible infinite loop)",
                             MAX_LOOP_ITERATIONS
                         )));
+                    }
+                    if crate::perf_flags::cs_cancel_in_loops()
+                        && crate::ssr_cancel::ssr_is_cancelled()
+                    {
+                        return Err(RuntimeError::Runtime(
+                            "SSR cancelled (loop abort)".to_string(),
+                        ));
                     }
                     let block_env = Env::child(self.env.clone());
                     let prev_env = std::mem::replace(&mut self.env, block_env);
