@@ -175,6 +175,69 @@ export default function App() {
 }
 
 #[test]
+fn relay_catalog_dir_index_listing_cs() {
+    let src = r#"
+import { buildDirTree, autoIndexDirFromPath, shouldTryDirectoryIndex, dirTreeNode, dirTreeHasKids, dirIndexListing } from '@relay/catalog';
+export default function App() {
+  const dtree = buildDirTree([{ path: 'history/a.md', _title: 'A' }, { path: 'history/chronology/b.md', _title: 'B' }]);
+  const hubDir = autoIndexDirFromPath('history/page.md');
+  const tryHub = shouldTryDirectoryIndex('history/page.md') ? 'Y' : 'n';
+  const histKids = dirTreeHasKids(dirTreeNode(dtree, 'history')) ? 'K' : 'n';
+  const listing = dirIndexListing(dtree, 'history', { maxDocs: 10 });
+  return hubDir + '|' + tryHub + '|' + histKids + '|' + listing.documents.length + '|' + listing.categories.length + '|' + listing.title;
+}
+"#;
+    let program = parse(src).expect("parse");
+    let analysis = analyze(&program).expect("analyze");
+    struct RelayHost;
+    impl Host for RelayHost {
+        fn fetch(&self, url: &str, _: Option<&Value>) -> Result<Value, String> {
+            Ok(host_fetch_object(true, 200.0, format!("body:{url}"), None))
+        }
+        fn navigate(&self, _: &str) -> Result<(), String> {
+            Ok(())
+        }
+        fn create_element(
+            &self,
+            tag: &str,
+            props: &Value,
+            children: &[Value],
+        ) -> Result<Value, String> {
+            Ok(Value::Object(
+                [
+                    ("type".into(), Value::String("element".into())),
+                    ("tag".into(), Value::String(tag.into())),
+                    ("props".into(), props.clone()),
+                    ("children".into(), Value::Array(children.to_vec())),
+                ]
+                .into_iter()
+                .collect(),
+            ))
+        }
+        fn load_module(&self, path: &str) -> Result<Value, String> {
+            relay_runtime::relay_modules::try_load_relay_module(path)
+                .ok_or_else(|| format!("missing {path}"))
+        }
+        fn log(&self, _: &str, _: &str) {}
+    }
+    let host: HostHandle = Rc::new(RefCell::new(RelayHost));
+    let mut rt = Runtime::new(program, analysis).with_host(host);
+    inject_standard_builtins(&rt);
+    let exports = rt.get_module_exports().expect("exports");
+    let f = match exports {
+        Value::Object(o) => o.get("default").cloned().unwrap(),
+        _ => panic!(),
+    };
+    let out = rt.call_value(&f, &[]).expect("call");
+    match out {
+        Value::String(s) => {
+            assert_eq!(s, "history|Y|K|1|1|history", "{s}");
+        }
+        other => panic!("{other:?}"),
+    }
+}
+
+#[test]
 fn relay_path_normalize_lookup_http_href() {
     let src = r#"
 import { normalizeHttpHref, lookupHttpHref } from '@relay/path';

@@ -1,11 +1,18 @@
 /**
  * Directory listing when hub page.md is missing (old CatchAll Categories + Documents).
- * Uses warm loadDirTree (DirNav QUERY) — O(folder children), not a fat index.json.
- * Phase ≥2; SSR shows placeholder (no QUERY).
+ * Listing rows from `@relay/catalog.dirIndexListing` over warm loadDirTree.
+ * Phase ≥3 fill; SSR shows placeholder (no QUERY).
  */
 import React from 'react'
 import { isClientLivePhase } from '@clevertree/style-internal'
-import { loadDirTree, rowPath, rowTitle, siteHref } from 'hooks/client/loadArticles.jsx'
+import {
+  autoIndexDirFromPath as hostAutoIndexDirFromPath,
+  shouldTryDirectoryIndex as hostShouldTryDirectoryIndex,
+  dirTreeNode,
+  dirTreeHasKids,
+  dirIndexListing,
+} from '@relay/catalog'
+import { loadDirTree, siteHref } from 'hooks/client/loadArticles.jsx'
 import { propStr } from 'hooks/client/propOr.jsx'
 
 function stripRel(raw) {
@@ -16,86 +23,21 @@ function stripRel(raw) {
   return s
 }
 
-function folderTitle(name) {
-  if (typeof name !== 'string') return ''
-  return name.replaceAll('_', ' ')
-}
-
-function skipFileName(name) {
-  if (typeof name !== 'string') return true
-  if (name === 'page.md' || name === 'page.mdx' || name === 'README.md') return true
-  if (name.indexOf('.auto.md') >= 0) return true
-  return false
-}
-
-/** Walk buildDirTree root to folder path ('' = site root folders/files). */
-export function findDirTreeNode(tree, dirRel) {
-  const dir = stripRel(dirRel)
-  if (!tree) return null
-  if (dir.length === 0) return tree
-  const parts = dir.split('/')
-  let node = tree
-  for (let i = 0; i < parts.length; i++) {
-    const want = parts[i]
-    if (want.length === 0) continue
-    let folders = []
-    try {
-      if (node && node.folders) folders = node.folders
-    } catch (e) {}
-    let next = null
-    for (let j = 0; j < folders.length; j++) {
-      let n = ''
-      try {
-        if (folders[j] && typeof folders[j].name === 'string') n = folders[j].name
-      } catch (e2) {}
-      if (n === want) {
-        next = folders[j]
-        break
-      }
-    }
-    if (!next) return null
-    node = next
-  }
-  return node
-}
-
-export function dirTreeHasKids(node) {
-  if (!node) return false
-  let nf = 0
-  let nd = 0
-  try {
-    if (node.files) nf = node.files.length
-  } catch (e) {}
-  try {
-    if (node.folders) nd = node.folders.length
-  } catch (e2) {}
-  return nf + nd > 0
-}
-
-/**
- * Directory to auto-index from a failed article path.
- * `events/false_flag/page.md` → `events/false_flag`
- * `events/false_flag.md` → `events/false_flag` when that folder exists in tree
- */
 export function autoIndexDirFromPath(pathPart) {
-  let p = stripRel(pathPart)
-  if (p.length === 0) return ''
-  if (p === 'page.md' || p === 'index.md' || p === 'README.md') return ''
-  if (p.length > 8 && p.slice(p.length - 8) === '/page.md') {
-    return p.slice(0, p.length - 8)
+  try {
+    const d = hostAutoIndexDirFromPath(pathPart)
+    return typeof d === 'string' ? d : ''
+  } catch (e) {
+    return ''
   }
-  if (p.length > 3 && p.slice(p.length - 3) === '.md') {
-    return p.slice(0, p.length - 3)
-  }
-  if (p.indexOf('.') < 0) return p
-  return ''
 }
 
 export function shouldTryDirectoryIndex(pathPart) {
-  // Root page.md miss is a real error — not a directory index.
-  if (stripRel(pathPart) === 'page.md') return false
-  const d = autoIndexDirFromPath(pathPart)
-  return d.length > 0
+  try {
+    return hostShouldTryDirectoryIndex(pathPart) === true
+  } catch (e) {
+    return false
+  }
 }
 
 /**
@@ -107,9 +49,8 @@ export function resolveDirectoryIndexDir(pathPart) {
   if (dir.length === 0) return ''
   if (isClientLivePhase(2) === true) {
     try {
-      const tree = loadDirTree()
-      const node = findDirTreeNode(tree, dir)
-      if (dirTreeHasKids(node)) return dir
+      const node = dirTreeNode(loadDirTree(), dir)
+      if (dirTreeHasKids(node) === true) return dir
       return ''
     } catch (e) {
       return ''
@@ -126,12 +67,13 @@ export default function DirectoryIndex(props) {
   // Phase 3 = feeds / AutoIndex (see HYDRATE_PHASES). Tree warms at phase 2.
   const liveCatalog = isClientLivePhase(3) === true
 
-  let title = folderTitle(dir)
-  const slash = dir.lastIndexOf('/')
-  if (slash >= 0) {
-    title = folderTitle(dir.slice(slash + 1))
+  let title = 'Directory'
+  if (dir.length > 0) {
+    const slash = dir.lastIndexOf('/')
+    const leaf = slash >= 0 ? dir.slice(slash + 1) : dir
+    title = leaf.replaceAll('_', ' ')
+    if (title.length === 0) title = 'Directory'
   }
-  if (title.length === 0) title = 'Directory'
 
   if (liveCatalog !== true) {
     return (
@@ -147,38 +89,43 @@ export default function DirectoryIndex(props) {
     )
   }
 
-  let node = null
+  let listing = null
   try {
-    node = findDirTreeNode(loadDirTree(), dir)
+    listing = dirIndexListing(loadDirTree(), dir, { maxDocs: 48 })
   } catch (e) {
-    node = null
+    listing = null
   }
 
-  let folders = []
-  let files = []
+  let listTitle = title
+  let categories = []
+  let documents = []
   try {
-    if (node && node.folders) folders = node.folders
-  } catch (e2) {}
+    if (listing && typeof listing.title === 'string' && listing.title.length > 0) {
+      listTitle = listing.title
+    }
+  } catch (eT) {}
   try {
-    if (node && node.files) files = node.files
-  } catch (e3) {}
+    if (listing && listing.categories) categories = listing.categories
+  } catch (eC) {}
+  try {
+    if (listing && listing.documents) documents = listing.documents
+  } catch (eD) {}
 
   let catEls = []
-  for (let i = 0; i < folders.length; i++) {
-    let name = ''
+  for (let i = 0; i < categories.length; i++) {
     let path = ''
+    let label = ''
     let count = 0
     try {
-      if (folders[i] && typeof folders[i].name === 'string') name = folders[i].name
-    } catch (e4) {}
+      if (categories[i] && typeof categories[i].path === 'string') path = categories[i].path
+    } catch (e1) {}
     try {
-      if (folders[i] && typeof folders[i].path === 'string') path = folders[i].path
-    } catch (e5) {}
+      if (categories[i] && typeof categories[i].label === 'string') label = categories[i].label
+    } catch (e2) {}
     try {
-      if (folders[i] && typeof folders[i].count === 'number') count = folders[i].count
-    } catch (e6) {}
+      if (categories[i] && typeof categories[i].count === 'number') count = categories[i].count
+    } catch (e3) {}
     if (path.length === 0) continue
-    const label = folderTitle(name)
     const countLabel = count > 0 ? ' (' + count + ')' : ''
     catEls = catEls.concat([
       <li key={'di-c-' + i} className="pt-dir-index-item pt-dir-index-cat">
@@ -191,20 +138,21 @@ export default function DirectoryIndex(props) {
   }
 
   let docEls = []
-  let docN = 0
-  for (let j = 0; j < files.length; j++) {
-    const p = rowPath(files[j])
+  for (let j = 0; j < documents.length; j++) {
+    let p = ''
+    let docTitle = ''
+    try {
+      if (documents[j] && typeof documents[j].path === 'string') p = documents[j].path
+    } catch (e4) {}
+    try {
+      if (documents[j] && typeof documents[j].title === 'string') docTitle = documents[j].title
+    } catch (e5) {}
     if (p.length === 0) continue
-    const slashF = p.lastIndexOf('/')
-    const base = slashF >= 0 ? p.slice(slashF + 1) : p
-    if (skipFileName(base)) continue
-    if (docN >= 48) break
     docEls = docEls.concat([
       <li key={'di-d-' + j} className="pt-dir-index-item pt-dir-index-doc">
-        <a href={siteHref('/' + p)}>{rowTitle(files[j])}</a>
+        <a href={siteHref('/' + p)}>{docTitle}</a>
       </li>,
     ])
-    docN = docN + 1
   }
 
   const empty = catEls.length === 0 && docEls.length === 0
@@ -216,7 +164,7 @@ export default function DirectoryIndex(props) {
       data-pt-dir-index-live="1"
       aria-label="Auto index"
     >
-      <h1 className="pt-dir-index-title">{title}</h1>
+      <h1 className="pt-dir-index-title">{listTitle}</h1>
       {empty ? (
         <p className="pt-muted">No indexed articles in this folder.</p>
       ) : (

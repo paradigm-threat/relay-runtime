@@ -1310,6 +1310,226 @@ pub fn dir_expand_paths(rel: &str) -> Value {
     Value::Array(out)
 }
 
+fn strip_rel_path(raw: &str) -> String {
+    let mut s = raw.trim().to_string();
+    while s.starts_with('/') {
+        s = s[1..].to_string();
+    }
+    s
+}
+
+fn folder_title_display(name: &str) -> String {
+    name.replace('_', " ")
+}
+
+fn skip_dir_index_file_name(name: &str) -> bool {
+    if name.is_empty() {
+        return true;
+    }
+    if name == "page.md" || name == "page.mdx" || name == "README.md" {
+        return true;
+    }
+    name.contains(".auto.md")
+}
+
+fn obj_str_field(o: &HashMap<String, Value>, key: &str) -> String {
+    o.get(key)
+        .and_then(|v| match v {
+            Value::String(s) => Some(s.clone()),
+            _ => None,
+        })
+        .unwrap_or_default()
+}
+
+fn obj_num_field(o: &HashMap<String, Value>, key: &str) -> f64 {
+    o.get(key)
+        .and_then(|v| match v {
+            Value::Number(n) => Some(*n),
+            _ => None,
+        })
+        .unwrap_or(0.0)
+}
+
+fn row_title_str(row: &Value) -> String {
+    match row {
+        Value::Object(o) => {
+            for key in ["_title", "title"] {
+                let t = obj_str_field(o, key);
+                if !t.is_empty() {
+                    return t;
+                }
+            }
+            let p = row_path_str(row);
+            if !p.is_empty() {
+                return p;
+            }
+            "Untitled".into()
+        }
+        _ => "Untitled".into(),
+    }
+}
+
+/// Walk `buildDirTree` root to folder path (`""` = site root). Missing → `null`.
+pub fn dir_tree_node(tree: &Value, dir_rel: &str) -> Value {
+    let dir = strip_rel_path(dir_rel);
+    if !matches!(tree, Value::Object(_)) {
+        return Value::Null;
+    }
+    let mut current: &Value = tree;
+    if dir.is_empty() {
+        return current.clone();
+    }
+    for want in dir.split('/').filter(|s| !s.is_empty()) {
+        let folders = match current {
+            Value::Object(o) => match o.get("folders") {
+                Some(Value::Array(a)) => a.as_slice(),
+                _ => return Value::Null,
+            },
+            _ => return Value::Null,
+        };
+        let mut found: Option<&Value> = None;
+        for folder in folders {
+            if let Value::Object(fo) = folder {
+                if obj_str_field(fo, "name") == want {
+                    found = Some(folder);
+                    break;
+                }
+            }
+        }
+        match found {
+            Some(n) => current = n,
+            None => return Value::Null,
+        }
+    }
+    current.clone()
+}
+
+pub fn dir_tree_has_kids(node: &Value) -> bool {
+    match node {
+        Value::Object(o) => {
+            let nf = match o.get("files") {
+                Some(Value::Array(a)) => a.len(),
+                _ => 0,
+            };
+            let nd = match o.get("folders") {
+                Some(Value::Array(a)) => a.len(),
+                _ => 0,
+            };
+            nf + nd > 0
+        }
+        _ => false,
+    }
+}
+
+/// CatchAll hub dir from a failed article path (`events/false_flag/page.md` → `events/false_flag`).
+pub fn auto_index_dir_from_path(path_part: &str) -> String {
+    let p = strip_rel_path(path_part);
+    if p.is_empty() {
+        return String::new();
+    }
+    if p == "page.md" || p == "index.md" || p == "README.md" {
+        return String::new();
+    }
+    if p.len() > 8 && p.ends_with("/page.md") {
+        return p[..p.len() - 8].to_string();
+    }
+    if p.len() > 3 && p.ends_with(".md") {
+        return p[..p.len() - 3].to_string();
+    }
+    if !p.contains('.') {
+        return p;
+    }
+    String::new()
+}
+
+pub fn should_try_directory_index(path_part: &str) -> bool {
+    if strip_rel_path(path_part) == "page.md" {
+        return false;
+    }
+    !auto_index_dir_from_path(path_part).is_empty()
+}
+
+/// Categories + Documents rows for a hub folder (CS maps to anchors).
+/// `opts.maxDocs` (number, default 48). Returns `{ title, categories, documents }`.
+pub fn dir_index_listing(tree: &Value, dir_rel: &str, max_docs: usize) -> Value {
+    let dir = strip_rel_path(dir_rel);
+    let mut title = {
+        let slash = dir.rfind('/');
+        let leaf = match slash {
+            Some(i) => &dir[i + 1..],
+            None => dir.as_str(),
+        };
+        folder_title_display(leaf)
+    };
+    if title.is_empty() {
+        title = "Directory".into();
+    }
+
+    let node = dir_tree_node(tree, &dir);
+    let (folders, files) = match &node {
+        Value::Object(o) => (
+            match o.get("folders") {
+                Some(Value::Array(a)) => a.clone(),
+                _ => Vec::new(),
+            },
+            match o.get("files") {
+                Some(Value::Array(a)) => a.clone(),
+                _ => Vec::new(),
+            },
+        ),
+        _ => (Vec::new(), Vec::new()),
+    };
+
+    let mut categories: Vec<Value> = Vec::new();
+    for folder in folders {
+        let Value::Object(fo) = folder else {
+            continue;
+        };
+        let path = obj_str_field(&fo, "path");
+        if path.is_empty() {
+            continue;
+        }
+        let name = obj_str_field(&fo, "name");
+        let count = obj_num_field(&fo, "count");
+        let mut c = HashMap::new();
+        c.insert("name".into(), Value::String(name.clone()));
+        c.insert("path".into(), Value::String(path));
+        c.insert("count".into(), Value::Number(count));
+        c.insert(
+            "label".into(),
+            Value::String(folder_title_display(&name)),
+        );
+        categories.push(Value::Object(c));
+    }
+
+    let mut documents: Vec<Value> = Vec::new();
+    let mut doc_n = 0usize;
+    for file in files {
+        if doc_n >= max_docs {
+            break;
+        }
+        let p = row_path_str(&file);
+        if p.is_empty() {
+            continue;
+        }
+        let base = p.rsplit('/').next().unwrap_or(p.as_str());
+        if skip_dir_index_file_name(base) {
+            continue;
+        }
+        let mut d = HashMap::new();
+        d.insert("path".into(), Value::String(p));
+        d.insert("title".into(), Value::String(row_title_str(&file)));
+        documents.push(Value::Object(d));
+        doc_n += 1;
+    }
+
+    let mut o = HashMap::new();
+    o.insert("title".into(), Value::String(title));
+    o.insert("categories".into(), Value::Array(categories));
+    o.insert("documents".into(), Value::Array(documents));
+    Value::Object(o)
+}
+
 struct TocNestNode {
     id: String,
     title: String,
@@ -1711,6 +1931,57 @@ fn catalog_module() -> Value {
         "dirExpandPaths".into(),
         Value::Native(|args| {
             Ok(dir_expand_paths(&arg_str(args, 0).unwrap_or_default()))
+        }),
+    );
+    m.insert(
+        "dirTreeNode".into(),
+        Value::Native(|args| {
+            let tree = args.first().cloned().unwrap_or(Value::Null);
+            let rel = arg_str(args, 1).unwrap_or_default();
+            Ok(dir_tree_node(&tree, &rel))
+        }),
+    );
+    m.insert(
+        "dirTreeHasKids".into(),
+        Value::Native(|args| {
+            let node = args.first().cloned().unwrap_or(Value::Null);
+            Ok(Value::Bool(dir_tree_has_kids(&node)))
+        }),
+    );
+    m.insert(
+        "autoIndexDirFromPath".into(),
+        Value::Native(|args| {
+            Ok(Value::String(auto_index_dir_from_path(
+                &arg_str(args, 0).unwrap_or_default(),
+            )))
+        }),
+    );
+    m.insert(
+        "shouldTryDirectoryIndex".into(),
+        Value::Native(|args| {
+            Ok(Value::Bool(should_try_directory_index(
+                &arg_str(args, 0).unwrap_or_default(),
+            )))
+        }),
+    );
+    m.insert(
+        "dirIndexListing".into(),
+        Value::Native(|args| {
+            let tree = args.first().cloned().unwrap_or(Value::Null);
+            let rel = arg_str(args, 1).unwrap_or_default();
+            let mut max_docs: usize = 48;
+            if let Some(opts) = arg_obj(args, 2) {
+                if let Some(Value::Number(n)) = opts.get("maxDocs") {
+                    if *n > 0.0 && n.is_finite() {
+                        max_docs = (*n as usize).max(1);
+                    }
+                }
+            } else if let Some(n) = arg_num(args, 2) {
+                if n > 0.0 && n.is_finite() {
+                    max_docs = (n as usize).max(1);
+                }
+            }
+            Ok(dir_index_listing(&tree, &rel, max_docs))
         }),
     );
     m.insert(
@@ -2147,6 +2418,66 @@ mod tests {
             ])
         );
         assert_eq!(dir_expand_paths("page.md"), Value::Array(vec![]));
+    }
+
+    #[test]
+    fn dir_index_helpers_walk_and_list() {
+        let rows = parse_nav_index_txt(
+            "events/false_flag/a.md\tAlpha\nevents/false_flag/investigations/x.md\tInv\nevents/false_flag/page.md\tHub\nevents/false_flag/z.auto.md\tAuto\n",
+        );
+        let tree = build_dir_tree(&rows);
+        assert_eq!(
+            auto_index_dir_from_path("events/false_flag/page.md"),
+            "events/false_flag"
+        );
+        assert_eq!(auto_index_dir_from_path("page.md"), "");
+        assert!(should_try_directory_index("events/false_flag/page.md"));
+        assert!(!should_try_directory_index("page.md"));
+
+        let node = dir_tree_node(&tree, "events/false_flag");
+        assert!(dir_tree_has_kids(&node));
+        assert_eq!(dir_tree_node(&tree, "missing/path"), Value::Null);
+
+        let listing = dir_index_listing(&tree, "events/false_flag", 48);
+        let obj = match listing {
+            Value::Object(o) => o,
+            _ => panic!("listing"),
+        };
+        assert_eq!(
+            obj.get("title"),
+            Some(&Value::String("false flag".into()))
+        );
+        let cats = match obj.get("categories") {
+            Some(Value::Array(a)) => a,
+            _ => panic!("categories"),
+        };
+        assert_eq!(cats.len(), 1);
+        let cat0 = match &cats[0] {
+            Value::Object(o) => o,
+            _ => panic!("cat0"),
+        };
+        assert_eq!(
+            cat0.get("path"),
+            Some(&Value::String("events/false_flag/investigations".into()))
+        );
+        assert_eq!(
+            cat0.get("label"),
+            Some(&Value::String("investigations".into()))
+        );
+        let docs = match obj.get("documents") {
+            Some(Value::Array(a)) => a,
+            _ => panic!("documents"),
+        };
+        assert_eq!(docs.len(), 1);
+        let doc0 = match &docs[0] {
+            Value::Object(o) => o,
+            _ => panic!("doc0"),
+        };
+        assert_eq!(
+            doc0.get("path"),
+            Some(&Value::String("events/false_flag/a.md".into()))
+        );
+        assert_eq!(doc0.get("title"), Some(&Value::String("Alpha".into())));
     }
 
     #[test]
