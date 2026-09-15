@@ -70,6 +70,11 @@ fn tip_modules() -> HashMap<String, String> {
     );
     add(
         &mut m,
+        "hooks/client/components/DirectoryIndex.jsx",
+        include_str!("fixtures/paradigm-threat-files/hooks/client/components/DirectoryIndex.jsx"),
+    );
+    add(
+        &mut m,
         "hooks/client/hostMode.jsx",
         include_str!("fixtures/paradigm-threat-files/hooks/client/hostMode.jsx"),
     );
@@ -567,5 +572,58 @@ fn nav_menu_open_and_close() {
     assert!(
         !has_aria_label(&closed, "Mobile menu"),
         "mobile dialog gone after close"
+    );
+}
+
+const DIR_INDEX_SRC: &str = r#"
+import DirectoryIndex from 'hooks/client/components/DirectoryIndex.jsx'
+export default function T() {
+  return <DirectoryIndex path="blog" />
+}
+"#;
+
+#[test]
+fn directory_index_ssr_placeholder_when_phase_zero() {
+    clear_run_state();
+    let (host, _) = ParkComponentHost::new();
+    let result = run_hook_persistent(DIR_INDEX_SRC, host).expect("DirectoryIndex SSR");
+    let vnode = value_to_vnode(&result).normalize();
+    let text = vnode.text_content();
+    assert!(
+        text.contains("loads after") || has_data_attr(&vnode, "data-pt-autoindex-ssr"),
+        "expected SSR placeholder: {text}"
+    );
+    assert!(
+        !text.contains("Blog A"),
+        "SSR must not QUERY catalog rows: {text}"
+    );
+}
+
+#[test]
+fn directory_index_lists_categories_and_documents_at_phase_three() {
+    clear_run_state();
+    set_client_live_phase(3);
+    let (host, _) = ParkComponentHost::new();
+    let (_val, vnode) = run_until_stable(DIR_INDEX_SRC, host);
+    let text = vnode_text(&vnode);
+    assert!(
+        text.contains("Categories"),
+        "expected Categories section: {text}"
+    );
+    assert!(
+        text.contains("nested") || text.contains("Nested"),
+        "expected subfolder link: {text}"
+    );
+    assert!(
+        text.contains("Documents"),
+        "expected Documents section: {text}"
+    );
+    assert!(
+        text.contains("Blog A"),
+        "expected file title from catalog: {text}"
+    );
+    assert!(
+        !text.contains("Could not load"),
+        "must not show article error: {text}"
     );
 }

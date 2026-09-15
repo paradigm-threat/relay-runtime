@@ -90,6 +90,15 @@ Expand state uses **`useState`** so chevron clicks **remount** children (DOM cla
 
 Catalog shape: stub rows → `@relay/catalog.buildDirTree` (or inject a fixed tree via the load path under test).
 
+### Directory index (missing `page.md`)
+
+[`DirectoryIndex.jsx`](../../pt/paradigm-threat-files/hooks/client/components/DirectoryIndex.jsx) — Categories + Documents from warm `loadDirTree`. Covered by `directory_index_*` in `dirnav_expand`.
+
+| Assert | How |
+|--------|-----|
+| SSR placeholder | phase 0 → `data-pt-autoindex-ssr` / “loads after…” |
+| Phase ≥2 list | QUERY mock → Categories + Documents text (not “Could not load”) |
+
 ### Header / Layout nav
 
 Existing coverage: `paradigm_files_get_hook_home_button_navigates` — Layout **Home** `onClick` → `setRoute` → path label updates (also asserts distinct **Up** `HandlerId`). Extend the same pattern for hamburger / menu toggles (structure + `HandlerId`, not CSS pixels).
