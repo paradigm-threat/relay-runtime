@@ -245,6 +245,7 @@ Siblings and parent components continue to render. This improves reliability com
 - **Supported subset doc:** this document
 - **Parse-first validation:** reject unsupported syntax at parse time with clear errors
 - **Golden/snapshot tests:** parse + run for representative hooks to catch regressions
+- **Component / click tests (vnode + `invoke_handler`):** [`CLEVERSCRIPT_COMPONENT_TESTING.md`](CLEVERSCRIPT_COMPONENT_TESTING.md) — layer 1 internal CS first; OS smoke second
 
 ---
 

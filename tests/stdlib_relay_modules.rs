@@ -292,3 +292,82 @@ fn tip_cached_nav_index_rows_warms_parse() {
     assert!(!std::rc::Rc::ptr_eq(&a, &c), "cache clear should re-parse");
     assert_eq!(c.len(), 2);
 }
+
+/// DirNav fixture shape: nested folders + expand ancestors for a deep file path.
+#[test]
+fn catalog_dir_tree_and_expand_paths_match_dirnav_fixture() {
+    let src = r#"
+import { buildDirTree, dirExpandPaths } from '@relay/catalog';
+export default function App() {
+  const rows = [
+    { path: 'blog/a.md', title: 'Blog A' },
+    { path: 'blog/nested/b.md', title: 'Nested B' },
+    { path: 'science/x.md', title: 'Science X' },
+  ];
+  const tree = buildDirTree(rows);
+  const paths = dirExpandPaths('blog/nested/b.md');
+  const blog = tree.folders[0];
+  let nestedName = '';
+  if (blog && blog.folders && blog.folders[0]) {
+    nestedName = blog.folders[0].name;
+  }
+  let nestedFile = '';
+  if (blog && blog.folders && blog.folders[0] && blog.folders[0].files && blog.folders[0].files[0]) {
+    nestedFile = blog.folders[0].files[0].path;
+  }
+  return paths[0] + '|' + paths[1] + '|' + blog.path + '|' + nestedName + '|' + nestedFile + '|' + tree.count;
+}
+"#;
+    let program = parse(src).expect("parse");
+    let analysis = analyze(&program).expect("analyze");
+    struct RelayHost;
+    impl Host for RelayHost {
+        fn fetch(&self, url: &str, _: Option<&Value>) -> Result<Value, String> {
+            Ok(host_fetch_object(true, 200.0, format!("body:{url}"), None))
+        }
+        fn navigate(&self, _: &str) -> Result<(), String> {
+            Ok(())
+        }
+        fn create_element(
+            &self,
+            tag: &str,
+            props: &Value,
+            children: &[Value],
+        ) -> Result<Value, String> {
+            Ok(Value::Object(
+                [
+                    ("type".into(), Value::String("element".into())),
+                    ("tag".into(), Value::String(tag.into())),
+                    ("props".into(), props.clone()),
+                    ("children".into(), Value::Array(children.to_vec())),
+                ]
+                .into_iter()
+                .collect(),
+            ))
+        }
+        fn load_module(&self, path: &str) -> Result<Value, String> {
+            relay_runtime::relay_modules::try_load_relay_module(path)
+                .ok_or_else(|| format!("missing {path}"))
+        }
+        fn log(&self, _: &str, _: &str) {}
+    }
+    let host: HostHandle = Rc::new(RefCell::new(RelayHost));
+    let mut rt = Runtime::new(program, analysis).with_host(host);
+    inject_standard_builtins(&rt);
+    let exports = rt.get_module_exports().expect("exports");
+    let f = match exports {
+        Value::Object(o) => o.get("default").cloned().unwrap(),
+        _ => panic!(),
+    };
+    let out = rt.call_value(&f, &[]).expect("call");
+    match out {
+        Value::String(s) => {
+            assert!(
+                s.starts_with("blog|blog/nested|blog|nested|blog/nested/b.md|"),
+                "expected expand + nest shape, got {s}"
+            );
+            assert!(s.ends_with("|3") || s.contains("|3"), "three catalog rows: {s}");
+        }
+        other => panic!("{other:?}"),
+    }
+}

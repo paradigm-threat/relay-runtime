@@ -288,6 +288,8 @@ export default function T() {
     let vnode_handlers =
         value_to_vnode_with_handlers(&result, &mut |v| register_handler(v)).normalize();
     let home_id = button_on_click_id(&vnode_handlers, "Home").expect("Home onClick id");
+    let up_id = button_on_click_id(&vnode_handlers, "Up").expect("Up onClick id");
+    assert_ne!(home_id, up_id, "Home and Up must be distinct handlers");
     invoke_handler(home_id).expect("invoke Home");
     assert!(
         consume_render_requested(),
