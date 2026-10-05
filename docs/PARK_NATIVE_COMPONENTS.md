@@ -25,10 +25,10 @@ Under the park tip, e.g. `hooks/client/native/`:
 
 | File | Role |
 |------|------|
-| `Affirmation.js` | CleverScript stub: factory returns a VNode with a custom tag + props (no `document`) |
-| `Affirmation.web.js` | Web host builder: modern JS/CSS, may use `document` / `localStorage` |
+| `Affirmation.js` | CleverScript stub: factory returns a VNode with a custom tag / `data-relay-park-native` + props (no `document`) |
+| `Affirmation.host.js` (or `Affirmation.web.js`) | Web host builder: modern JS/CSS, may use `document` / `localStorage` — **never** imported by CleverScript |
 | `Affirmation.android.js` | Android host stub or bridge until a Kotlin view lands |
-| `registry.web.js` | Registers tag → builder with the web host |
+| `registry.host.js` | Registers tag → builder with the web host (optional; tip inject may load hosts directly) |
 
 Module resolution prefers `Foo.<platform>.js` then `Foo.js` (see relay-runtime host resolve).
 

@@ -782,8 +782,11 @@ export async function preloadImportClosure(moduleMap, fetchSource, onLoaded) {
         const rel = resolveImportRel(path, spec);
         if (!rel || moduleMapHas(moduleMap, rel) || queued.has(rel)) continue;
         const underNative = rel.indexOf('/native/') >= 0 || rel.indexOf('native/') === 0;
+        // Never pull `*.web.js` / host browser scripts into the CleverScript module map.
         const candidates = underNative
-          ? platformModuleCandidates(rel, detectRelayHostPlatform())
+          ? platformModuleCandidates(rel, detectRelayHostPlatform()).filter((c) => {
+              return c.indexOf('.web.') < 0 && c.indexOf('.host.') < 0;
+            })
           : [rel];
         for (let ci = 0; ci < candidates.length; ci = ci + 1) {
           const cand = candidates[ci];
