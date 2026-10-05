@@ -781,8 +781,16 @@ export async function preloadImportClosure(moduleMap, fetchSource, onLoaded) {
       for (const spec of localImportSpecs(src)) {
         const rel = resolveImportRel(path, spec);
         if (!rel || moduleMapHas(moduleMap, rel) || queued.has(rel)) continue;
-        queued.add(rel);
-        toFetch.push(rel);
+        const underNative = rel.indexOf('/native/') >= 0 || rel.indexOf('native/') === 0;
+        const candidates = underNative
+          ? platformModuleCandidates(rel, detectRelayHostPlatform())
+          : [rel];
+        for (let ci = 0; ci < candidates.length; ci = ci + 1) {
+          const cand = candidates[ci];
+          if (!cand || moduleMapHas(moduleMap, cand) || queued.has(cand)) continue;
+          queued.add(cand);
+          toFetch.push(cand);
+        }
       }
     }
     if (toFetch.length === 0) break;
@@ -1491,6 +1499,98 @@ export function applyVnodePatches(container, prevRoot, patches, invokeHandler, o
   return true;
 }
 
+/** Park-authored native builders (tag → build(props, invokeHandler, onAfterInvoke) => HTMLElement). */
+const PARK_NATIVE_BUILDERS = new Map();
+
+/**
+ * Register a park host builder for a custom VNode tag (e.g. `fb-affirmation`).
+ * Parks call this from `*.web.js` / `registry.web.js` — not from CleverScript.
+ * @param {string} tag
+ * @param {(props: object, invokeHandler: Function, onAfterInvoke: Function|null) => HTMLElement} buildFn
+ */
+export function registerParkNative(tag, buildFn) {
+  const t = String(tag || '').trim();
+  if (!t || typeof buildFn !== 'function') return;
+  PARK_NATIVE_BUILDERS.set(t, buildFn);
+}
+
+/** @param {string} tag */
+export function getParkNativeBuilder(tag) {
+  return PARK_NATIVE_BUILDERS.get(String(tag || '').trim()) || null;
+}
+
+export function listParkNativeTags() {
+  return Array.from(PARK_NATIVE_BUILDERS.keys());
+}
+
+try {
+  if (typeof globalThis !== 'undefined') {
+    globalThis.__relayRegisterParkNative = registerParkNative;
+    globalThis.__relayGetParkNativeBuilder = getParkNativeBuilder;
+  }
+} catch (_) {
+  /* optional */
+}
+
+/**
+ * RN-style candidates for a module path: `Foo.web.js` / `Foo.android.js` then `Foo.js`.
+ * CleverScript stubs should stay on `Foo.js`; host builders are `Foo.web.js` and load via registry, not CS import.
+ * @param {string} pathKey
+ * @param {string} [platform] `web` | `android` | …
+ * @returns {string[]}
+ */
+export function platformModuleCandidates(pathKey, platform) {
+  const raw = String(pathKey || '').replace(/^\/+/, '');
+  if (!raw) return [];
+  const plat = String(platform || detectRelayHostPlatform()).trim() || 'web';
+  const out = [];
+  const m = raw.match(/^(.*)\.(jsx|js|yaml|yml)$/i);
+  if (m) {
+    const base = m[1];
+    const ext = m[2];
+    if (!/\.(web|android|ios|native)$/i.test(base)) {
+      out.push(`${base}.${plat}.${ext}`);
+    }
+  }
+  out.push(raw);
+  return out;
+}
+
+function detectRelayHostPlatform() {
+  try {
+    if (typeof globalThis !== 'undefined' && globalThis.__relayHostPlatform) {
+      return String(globalThis.__relayHostPlatform);
+    }
+  } catch (_) {
+    /* optional */
+  }
+  return 'web';
+}
+
+function parkNativeTagFromProps(props) {
+  if (!props) return '';
+  const a = propStringFromVnodeProps(props, 'data-relay-park-native');
+  if (a) return a;
+  const b = propStringFromVnodeProps(props, 'dataRelayParkNative');
+  if (b) return b;
+  return '';
+}
+
+function tryBuildParkNative(tag, props, invokeHandler, onAfterInvoke) {
+  let builder = getParkNativeBuilder(tag);
+  if (!builder) {
+    const viaProp = parkNativeTagFromProps(props);
+    if (viaProp) builder = getParkNativeBuilder(viaProp);
+  }
+  if (!builder) return null;
+  try {
+    return builder(props || {}, invokeHandler, onAfterInvoke);
+  } catch (err) {
+    console.error('[relay-runtime] park native build failed:', tag, err);
+    return null;
+  }
+}
+
 export function vnodeToDom(v, invokeHandler = invoke_handler, onAfterInvoke = null) {
   if (!v) return null;
   if (v.Empty !== undefined) return null; // VNode::Empty
@@ -1516,6 +1616,8 @@ export function vnodeToDom(v, invokeHandler = invoke_handler, onAfterInvoke = nu
     if (tag === 'relay-audio-player') {
       return buildRelayAudioPlayer(props || {}, invokeHandler, onAfterInvoke);
     }
+    const parkEl = tryBuildParkNative(tag, props || {}, invokeHandler, onAfterInvoke);
+    if (parkEl) return parkEl;
     if (tag === 'fragment') {
       const frag = document.createDocumentFragment();
       for (const c of children || []) {
@@ -1537,6 +1639,8 @@ export function vnodeToDom(v, invokeHandler = invoke_handler, onAfterInvoke = nu
     if (rawTag === 'relay-audio-player') {
       return buildRelayAudioPlayer(v.props || {}, invokeHandler, onAfterInvoke);
     }
+    const parkEl2 = tryBuildParkNative(rawTag, v.props || {}, invokeHandler, onAfterInvoke);
+    if (parkEl2) return parkEl2;
     const el = createVnodeDomElement(rawTag);
     applyVnodeDomProps(el, rawTag, v.props, invokeHandler, onAfterInvoke);
     appendVnodeDomChildren(el, v.props, v.children, invokeHandler, onAfterInvoke);

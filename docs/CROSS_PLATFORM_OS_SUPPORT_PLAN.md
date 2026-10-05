@@ -486,14 +486,15 @@ relay-runtime/
 
 ---
 
-## 10. Native Components Roadmap (Future)
+## 10. Native Components Roadmap
 
-To support audio/video/gaming without rerender storms:
+To support audio/video/gaming and **park product widgets** without CleverScript rerender storms:
 
-1. **Host trait extension:** `create_native_component(tag, props, children)` returning an opaque handle
-2. **Tag allowlist:** `video`, `audio`, `canvas`, `GameView` → host creates native view once
-3. **Control flow:** Handlers (play, pause, etc.) call `invoke_handler`; no full tree re-run for media state
-4. **Documentation:** Recommend authors use native components for high-frequency updates
+1. **Distributed builtins** (done / evolving): tags such as `relay-video-player` / `relay-audio-player` built into host glue; CleverScript imports `@clevertree/video`, etc.
+2. **Park-authored natives (support, not product UI in Relay):** React Native–style per-OS files (`Foo.web.js` / `Foo.android.js` / `Foo.js`) plus a **park tag registry** so tip host scripts register builders. CleverScript stubs emit custom tags; hosts dispatch without shipping affirmation/marquee/theater widgets inside distributions. Spec: [`PARK_NATIVE_COMPONENTS.md`](PARK_NATIVE_COMPONENTS.md).
+3. **Host trait extension (optional later):** `create_native_component(tag, props, children)` returning an opaque handle for allowlisted tags that skip inner VNode diffing.
+4. **Control flow:** Handlers (play, pause, confirm, etc.) call `invoke_handler`; no full tip-tree re-run for media/widget inner state.
+5. **Authorship docs:** CleverScript = state, routing, wiring, querying; park natives = complex reusable / high-churn UI ([`RELAY_CLEVERSCRIPT_REACT_RENDERING.md`](../../relay-gateway/docs/RELAY_CLEVERSCRIPT_REACT_RENDERING.md)).
 
 ---
 
