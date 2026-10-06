@@ -1166,12 +1166,36 @@ function attachHtml5VideoPlayer(shell, props, invokeHandler, onAfterInvoke, src)
   return shell;
 }
 
+function spokenVideoError(err) {
+  if (err && typeof err.userMessage === 'string' && err.userMessage) return err.userMessage;
+  const code = err && err.code ? String(err.code) : '';
+  if (code === 'WEBCODECS_UNSUPPORTED' || code === 'SOURCE_TOO_LARGE') {
+    return 'Full quality needs a capable browser — switching to a compatibility stream.';
+  }
+  if (code === 'FETCH_FAILED') {
+    return 'The video file could not be downloaded. Trying another source.';
+  }
+  if (code === 'WASM_LOAD_FAILED' || code === 'ENGINE_MISSING') {
+    return 'This browser could not load the extended video engine.';
+  }
+  if (code === 'DEMUX_FAILED') {
+    return 'This file’s container could not be read.';
+  }
+  if (code === 'DECODE_FAILED' || code === 'UNDERRUN') {
+    return 'Video decode failed on this device.';
+  }
+  const msg = err && err.message ? String(err.message) : '';
+  if (msg) return msg.split(' (')[0];
+  return 'Playback failed.';
+}
+
 function mountWasmVideoPlayer(shell, props, invokeHandler, onAfterInvoke, src) {
   const playerId = propStringFromVnodeProps(props, 'playerId') || `rvp-${Math.random().toString(36).slice(2)}`;
   shell.dataset.relayEngine = 'wasm';
   shell.dataset.relayPlayerId = playerId;
   const note = document.createElement('div');
   note.className = 'relay-video-player-loading';
+  note.setAttribute('role', 'status');
   note.textContent = 'Loading extended video engine…';
   shell.appendChild(note);
 
@@ -1179,17 +1203,40 @@ function mountWasmVideoPlayer(shell, props, invokeHandler, onAfterInvoke, src) {
   import(/* webpackIgnore: true */ modUrl)
     .then((mod) => {
       const create = mod.createWasmPlayer || (mod.default && mod.default.createWasmPlayer);
-      if (!create) throw new Error('relay-video-web missing createWasmPlayer');
-      note.remove();
+      if (!create) {
+        const err = new Error('relay-video-web missing createWasmPlayer');
+        err.code = 'ENGINE_MISSING';
+        err.userMessage =
+          'The extended video engine is missing from this site build. Switching to a compatibility stream.';
+        throw err;
+      }
       return create(shell, src, {
         wasmUrl: relayVideoWasmUrl(),
         autoPlay: propBoolFromVnodePropsLoose(props, 'autoPlay') === true
           || propBoolFromVnodePropsLoose(props, 'playing') === true,
+        onStatus: (msg) => {
+          try {
+            if (msg) note.textContent = msg;
+            else if (note.parentNode) note.remove();
+          } catch (_) {}
+        },
         onPlay: () => fireRelayVideoHandler(props, 'onPlay', playerId, {}, invokeHandler, onAfterInvoke),
         onPause: () => fireRelayVideoHandler(props, 'onPause', playerId, {}, invokeHandler, onAfterInvoke),
         onEnded: () => fireRelayVideoHandler(props, 'onEnded', playerId, {}, invokeHandler, onAfterInvoke),
-        onError: () => fireRelayVideoHandler(props, 'onError', playerId, {}, invokeHandler, onAfterInvoke),
-        onUnderrun: () => fireRelayVideoHandler(props, 'onError', playerId, {}, invokeHandler, onAfterInvoke),
+        onError: (err) => {
+          try {
+            note.textContent = spokenVideoError(err);
+            if (!note.parentNode) shell.appendChild(note);
+          } catch (_) {}
+          fireRelayVideoHandler(props, 'onError', playerId, {}, invokeHandler, onAfterInvoke);
+        },
+        onUnderrun: (err) => {
+          try {
+            note.textContent = spokenVideoError(err);
+            if (!note.parentNode) shell.appendChild(note);
+          } catch (_) {}
+          fireRelayVideoHandler(props, 'onError', playerId, {}, invokeHandler, onAfterInvoke);
+        },
         onTimeUpdate: (t, d) =>
           fireRelayVideoHandler(
             props,
@@ -1202,6 +1249,9 @@ function mountWasmVideoPlayer(shell, props, invokeHandler, onAfterInvoke, src) {
       });
     })
     .then((api) => {
+      try {
+        if (note.parentNode) note.remove();
+      } catch (_) {}
       shell.__relayVideoApi = api;
       fireRelayVideoHandler(props, 'onLoadedMetadata', playerId, {}, invokeHandler, onAfterInvoke);
       const cmdSeq = propNumberFromVnodeProps(props, 'commandSeq');
@@ -1217,7 +1267,7 @@ function mountWasmVideoPlayer(shell, props, invokeHandler, onAfterInvoke, src) {
     .catch((e) => {
       console.warn('[relay-runtime] WASM video escalate failed', e);
       try {
-        note.textContent = 'Extended playback unavailable';
+        note.textContent = spokenVideoError(e);
       } catch (_) {}
       fireRelayVideoHandler(props, 'onError', playerId, {}, invokeHandler, onAfterInvoke);
     });
