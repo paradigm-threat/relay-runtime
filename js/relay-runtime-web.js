@@ -961,6 +961,24 @@ function buildRelayAudioPlayer(props, invokeHandler, onAfterInvoke) {
   return audio;
 }
 
+/** Resolve `/wasm/c/{oid}/` from page scripts when `@relay/web-assets` is opted in. */
+function relayWasmPrefix() {
+  try {
+    if (typeof globalThis !== 'undefined' && globalThis.__RELAY_WASM_PREFIX__) {
+      return String(globalThis.__RELAY_WASM_PREFIX__).replace(/\/?$/, '/');
+    }
+  } catch (_) {}
+  try {
+    const scripts = document.getElementsByTagName('script');
+    for (let i = 0; i < scripts.length; i++) {
+      const src = scripts[i].getAttribute('src') || '';
+      const m = src.match(/\/(?:assets|wasm)\/c\/([a-f0-9]{40})\//i);
+      if (m) return '/wasm/c/' + m[1] + '/';
+    }
+  } catch (_) {}
+  return '/wasm/';
+}
+
 /** Resolve CDN / pinned URL for @clevertree/relay-video-web player module. */
 function relayVideoWebModuleUrl() {
   try {
@@ -968,15 +986,7 @@ function relayVideoWebModuleUrl() {
       return String(globalThis.__RELAY_VIDEO_WEB_URL__);
     }
   } catch (_) {}
-  try {
-    const pinned =
-      typeof globalThis !== 'undefined' && globalThis.__RELAY_WASM_PREFIX__
-        ? String(globalThis.__RELAY_WASM_PREFIX__).replace(/\/?$/, '/')
-        : '/wasm/';
-    return pinned + 'relay_video_wasm_pkg/player.js';
-  } catch (_) {
-    return '/wasm/relay_video_wasm_pkg/player.js';
-  }
+  return relayWasmPrefix() + 'relay_video_wasm_pkg/player.js';
 }
 
 function relayVideoWasmUrl() {
@@ -985,15 +995,7 @@ function relayVideoWasmUrl() {
       return String(globalThis.__RELAY_VIDEO_WASM_URL__);
     }
   } catch (_) {}
-  try {
-    const pinned =
-      typeof globalThis !== 'undefined' && globalThis.__RELAY_WASM_PREFIX__
-        ? String(globalThis.__RELAY_WASM_PREFIX__).replace(/\/?$/, '/')
-        : '/wasm/';
-    return pinned + 'relay_video_wasm_pkg/relay_video_wasm_bg.wasm';
-  } catch (_) {
-    return '/wasm/relay_video_wasm_pkg/relay_video_wasm_bg.wasm';
-  }
+  return relayWasmPrefix() + 'relay_video_wasm_pkg/relay_video_wasm_bg.wasm';
 }
 
 function urlLooksMatroska(url) {
