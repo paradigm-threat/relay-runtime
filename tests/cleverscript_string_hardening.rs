@@ -13,6 +13,56 @@ fn run(src: &str) -> Value {
 }
 
 #[test]
+fn indexof_slice_stay_aligned_across_multibyte_chars() {
+    // Regression: indexOf used UTF-8 byte offsets while slice used UTF-16 units.
+    // Flashback README rewrite then mangled `## Changes` → `## C)anges` after em-dashes/curly quotes.
+    let v = run(
+        r#"
+export default function run(ctx) {
+  const text = '# The Mummy (1999) — Debugged\n\nDetails: [PLAN.md](PLAN.md), [INVESTIGATION.md](INVESTIGATION.md).\n\n## Changes\n\n- after Book\n- Sidecars live\n## Subtitles (two tracks)\n'
+  let out = ''
+  let i = 0
+  while (i < text.length) {
+    const mark = text.indexOf('](', i)
+    if (mark < 0) {
+      out = out + text.slice(i)
+      break
+    }
+    const close = text.indexOf(')', mark + 2)
+    if (close < 0) {
+      out = out + text.slice(i)
+      break
+    }
+    out = out + text.slice(i, mark + 2)
+    let href = text.slice(mark + 2, close)
+    out = out + 'ABS/' + href + ')'
+    i = close + 1
+  }
+  const ok =
+    out.indexOf('## Changes') >= 0 &&
+    out.indexOf('C)anges') < 0 &&
+    out.indexOf('## Subtitles') >= 0 &&
+    out.indexOf('after Book') >= 0 &&
+    out.indexOf(')fter') < 0 &&
+    out.indexOf('Sidecars') >= 0 &&
+    out.indexOf('ABS/PLAN.md') >= 0 &&
+    out.indexOf('ABS/INVESTIGATION.md') >= 0
+  return ok ? out : 'FAIL:' + out
+}
+"#,
+    );
+    let Value::String(s) = v else {
+        panic!("expected string: {v:?}");
+    };
+    assert!(
+        !s.starts_with("FAIL:"),
+        "indexOf/slice desync corrupted rewrite: {s}"
+    );
+    assert!(s.contains("## Changes"), "{s}");
+    assert!(s.contains("ABS/INVESTIGATION.md"), "{s}");
+}
+
+#[test]
 fn lone_double_quote_string_literal_roundtrips() {
     let v = run(
         r#"

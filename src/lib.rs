@@ -13,6 +13,7 @@ pub mod host;
 pub mod html;
 pub mod lexer;
 pub mod markdown_host;
+pub mod nav_intent;
 pub mod perf_flags;
 pub mod relay_modules;
 pub mod session_theme;

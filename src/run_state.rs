@@ -124,7 +124,9 @@ pub fn tip_cached_nav_index_rows(text: &str) -> std::rc::Rc<Vec<Value>> {
     })
 }
 
-/// Inject Array / JSON / Object / Date / Math / Number / parseInt / localStorage / undefined /
+/// Inject Array / JSON / Object / Date / Math / Number / parseInt / parseFloat /
+/// encodeURIComponent / decodeURIComponent / localStorage / undefined /
+/// document / setInterval / clearInterval into the CleverScript env.
 /// document / setInterval.
 /// Entry hooks get this via [`run_hook_persistent`]; imported modules must call it too.
 ///
@@ -145,6 +147,14 @@ pub fn inject_standard_builtins(runtime: &Runtime) {
     env.set("Number", number_value());
     env.set("parseInt", Value::Native(parse_int_native));
     env.set("parseFloat", Value::Native(parse_float_native));
+    env.set(
+        "encodeURIComponent",
+        Value::Native(encode_uri_component_native),
+    );
+    env.set(
+        "decodeURIComponent",
+        Value::Native(decode_uri_component_native),
+    );
     env.set("document", crate::dom_host::document_value());
     env.set("setInterval", crate::dom_host::set_interval_value());
     env.set("clearInterval", crate::dom_host::clear_interval_value());
@@ -156,6 +166,14 @@ pub fn inject_standard_builtins(runtime: &Runtime) {
     gt.insert("JSON".to_string(), json);
     gt.insert("Array".to_string(), array);
     gt.insert("Object".to_string(), object);
+    gt.insert(
+        "encodeURIComponent".to_string(),
+        Value::Native(encode_uri_component_native),
+    );
+    gt.insert(
+        "decodeURIComponent".to_string(),
+        Value::Native(decode_uri_component_native),
+    );
     CS_GLOBAL_THIS_EXTRAS.with(|m| {
         for (k, v) in m.borrow().iter() {
             gt.insert(k.clone(), v.clone());
@@ -312,6 +330,95 @@ fn coerce_number(v: &Value) -> Option<f64> {
         }
         Value::Bool(b) => Some(if *b { 1.0 } else { 0.0 }),
         Value::Null => Some(0.0),
+        _ => None,
+    }
+}
+
+fn value_to_uri_string(v: &Value) -> String {
+    match v {
+        Value::String(s) => s.clone(),
+        Value::Number(n) => {
+            if n.is_nan() {
+                "NaN".into()
+            } else if *n == f64::INFINITY {
+                "Infinity".into()
+            } else if *n == f64::NEG_INFINITY {
+                "-Infinity".into()
+            } else if n.fract() == 0.0 && n.abs() < 1e15 {
+                format!("{}", *n as i64)
+            } else {
+                format!("{}", n)
+            }
+        }
+        Value::Bool(b) => b.to_string(),
+        Value::Null => "null".into(),
+        _ => "undefined".into(),
+    }
+}
+
+/// JS `encodeURIComponent` unreserved: A–Z a–z 0–9 - _ . ! ~ * ' ( )
+fn encode_uri_component_native(args: &[Value]) -> Result<Value, String> {
+    let s = match args.first() {
+        Some(v) => value_to_uri_string(v),
+        None => "undefined".into(),
+    };
+    let mut out = String::with_capacity(s.len());
+    for &b in s.as_bytes() {
+        let unreserved = matches!(
+            b,
+            b'A'..=b'Z'
+                | b'a'..=b'z'
+                | b'0'..=b'9'
+                | b'-'
+                | b'_'
+                | b'.'
+                | b'!'
+                | b'~'
+                | b'*'
+                | b'\''
+                | b'('
+                | b')'
+        );
+        if unreserved {
+            out.push(b as char);
+        } else {
+            out.push_str(&format!("%{:02X}", b));
+        }
+    }
+    Ok(Value::String(out))
+}
+
+fn decode_uri_component_native(args: &[Value]) -> Result<Value, String> {
+    let s = match args.first() {
+        Some(v) => value_to_uri_string(v),
+        None => "undefined".into(),
+    };
+    let bytes = s.as_bytes();
+    let mut out: Vec<u8> = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' && i + 2 < bytes.len() {
+            let h1 = bytes[i + 1];
+            let h2 = bytes[i + 2];
+            if let (Some(a), Some(b)) = (hex_nibble(h1), hex_nibble(h2)) {
+                out.push((a << 4) | b);
+                i += 3;
+                continue;
+            }
+        }
+        out.push(bytes[i]);
+        i += 1;
+    }
+    String::from_utf8(out)
+        .map(Value::String)
+        .map_err(|_| "URI malformed".to_string())
+}
+
+fn hex_nibble(b: u8) -> Option<u8> {
+    match b {
+        b'0'..=b'9' => Some(b - b'0'),
+        b'a'..=b'f' => Some(b - b'a' + 10),
+        b'A'..=b'F' => Some(b - b'A' + 10),
         _ => None,
     }
 }
@@ -593,6 +700,51 @@ pub fn json_value() -> Value {
         }),
     );
     Value::Object(obj)
+}
+
+/// Snapshot CleverScript `localStorage` so the Android shell can persist it.
+pub fn local_storage_to_json() -> String {
+    LOCAL_STORAGE.with(|m| {
+        let map = m.borrow();
+        let mut obj = serde_json::Map::new();
+        for (k, v) in map.iter() {
+            obj.insert(k.clone(), serde_json::Value::String(v.clone()));
+        }
+        serde_json::Value::Object(obj).to_string()
+    })
+}
+
+/// Replace CleverScript `localStorage` from a JSON object of string values.
+pub fn replace_local_storage_json(json: &str) {
+    let parsed: serde_json::Value = match serde_json::from_str(json) {
+        Ok(v) => v,
+        Err(_) => return,
+    };
+    let Some(obj) = parsed.as_object() else {
+        return;
+    };
+    let mut next = std::collections::HashMap::new();
+    for (k, v) in obj {
+        if let Some(s) = v.as_str() {
+            next.insert(k.clone(), s.to_string());
+        }
+    }
+    LOCAL_STORAGE.with(|m| *m.borrow_mut() = next);
+}
+
+#[cfg(test)]
+mod local_storage_persist_tests {
+    use super::*;
+
+    #[test]
+    fn round_trip_keeps_ack_and_ignores_bad_json() {
+        replace_local_storage_json(r#"{"flashback.ownershipAck.v1":"1"}"#);
+        assert!(local_storage_to_json().contains("flashback.ownershipAck.v1"));
+        replace_local_storage_json("not-json");
+        assert!(local_storage_to_json().contains("flashback.ownershipAck.v1"));
+        replace_local_storage_json("{}");
+        assert_eq!(local_storage_to_json(), "{}");
+    }
 }
 
 /// Build localStorage object for injection into runtime env.

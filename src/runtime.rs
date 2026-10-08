@@ -38,6 +38,53 @@ fn utf16_slice_by_units(s: &str, start: usize, end: usize) -> String {
     String::from_utf16_lossy(&v[start..end])
 }
 
+/// JS `String.prototype.indexOf` — indices are UTF-16 code units (must match `slice`/`charAt`).
+fn utf16_index_of(s: &str, sub: &str, start_utf16: isize) -> f64 {
+    let hay: Vec<u16> = s.encode_utf16().collect();
+    let needle: Vec<u16> = sub.encode_utf16().collect();
+    let cu = hay.len() as isize;
+    let mut start = start_utf16;
+    if start < 0 {
+        start += cu;
+    }
+    if start < 0 {
+        start = 0;
+    }
+    if needle.is_empty() {
+        return start.clamp(0, cu) as f64;
+    }
+    let start_u = start as usize;
+    if start_u >= hay.len() || needle.len() > hay.len().saturating_sub(start_u) {
+        return -1.0;
+    }
+    let last = hay.len() - needle.len();
+    for i in start_u..=last {
+        if hay[i..i + needle.len()] == needle[..] {
+            return i as f64;
+        }
+    }
+    -1.0
+}
+
+/// JS `String.prototype.lastIndexOf` — UTF-16 code unit index.
+fn utf16_last_index_of(s: &str, sub: &str) -> f64 {
+    let hay: Vec<u16> = s.encode_utf16().collect();
+    let needle: Vec<u16> = sub.encode_utf16().collect();
+    if needle.is_empty() {
+        return hay.len() as f64;
+    }
+    if needle.len() > hay.len() {
+        return -1.0;
+    }
+    let last = hay.len() - needle.len();
+    for i in (0..=last).rev() {
+        if hay[i..i + needle.len()] == needle[..] {
+            return i as f64;
+        }
+    }
+    -1.0
+}
+
 /// Hook slot state for a component instance.
 #[derive(Debug)]
 pub enum HookSlot {
@@ -593,6 +640,18 @@ impl Runtime {
                         let key = self.resolve_member_key(property, *computed)?;
                         match &mut obj {
                             Value::Object(o) => {
+                                if key == "href" {
+                                    let is_loc = matches!(
+                                        o.get("__relayLocation"),
+                                        Some(Value::Bool(true))
+                                    );
+                                    if is_loc {
+                                        if let Value::String(path) = &val {
+                                            crate::nav_intent::note_location_href(path);
+                                            crate::run_state::set_render_requested();
+                                        }
+                                    }
+                                }
                                 o.insert(key, val.clone());
                             }
                             Value::Array(a) => {
@@ -1743,35 +1802,14 @@ impl Runtime {
                     .get(1)
                     .and_then(|v| if let Value::Number(n) = v { Some(*n as isize) } else { None })
                     .unwrap_or(0);
-                let cu = s.encode_utf16().count() as isize;
-                let idx = if sub.is_empty() {
-                    let mut fi = start;
-                    if fi < 0 {
-                        fi = cu + fi;
-                    }
-                    fi.clamp(0, cu) as f64
-                } else if start <= 0 {
-                    s.find(sub).map(|i| i as f64).unwrap_or(-1.0)
-                } else {
-                    s.get(start.max(0) as usize..)
-                        .and_then(|tail| tail.find(sub))
-                        .map(|i| (start.max(0) as usize + i) as f64)
-                        .unwrap_or(-1.0)
-                };
-                Value::Number(idx)
+                Value::Number(utf16_index_of(s, sub, start))
             }
             "lastIndexOf" => {
                 let sub = _args
                     .first()
                     .and_then(|v| if let Value::String(x) = v { Some(x.as_str()) } else { None })
                     .unwrap_or("");
-                if sub.is_empty() {
-                    Value::Number(s.encode_utf16().count() as f64)
-                } else if let Some(i) = s.rfind(sub) {
-                    Value::Number(i as f64)
-                } else {
-                    Value::Number(-1.0)
-                }
+                Value::Number(utf16_last_index_of(s, sub))
             }
             "slice" => {
                 let len_i = s.encode_utf16().count() as isize;

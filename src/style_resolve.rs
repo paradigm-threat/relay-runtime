@@ -17,7 +17,18 @@ use crate::desktop_style::{
 };
 use crate::vdom::{PropValue, VNode};
 use serde_json;
+use std::cell::Cell;
 use std::collections::HashMap;
+
+thread_local! {
+    static VIEWPORT_CSS_PX: Cell<f32> = const { Cell::new(0.0) };
+}
+
+/// CSS px width of the native window. `0` leaves `@media (min/max-width)` unapplied.
+pub fn set_viewport_css_px(px: f32) {
+    let px = if px.is_finite() && px > 0.0 { px } else { 0.0 };
+    VIEWPORT_CSS_PX.with(|c| c.set(px));
+}
 
 /// Platform determines which styler variant (web vs android) for unit conversion.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -85,7 +96,13 @@ pub fn resolve_vnode_styles(
             state.register_tags(["html".to_string(), "body".to_string()]);
             resolve_element_styles_web(vnode, &mut state)
         }
-        other => resolve_element_styles_native(vnode, &state, other, 16.0),
+        other => resolve_element_styles_native(
+            vnode,
+            &state,
+            other,
+            16.0,
+            &InheritedText::default(),
+        ),
     };
     let inject_css = match platform {
         Platform::Web => {
@@ -162,12 +179,60 @@ fn resolve_element_styles_web(vnode: VNode, state: &mut themed_styler::State) ->
     }
 }
 
+/// CSS properties that inherit, flattened onto each native node so hosts do not
+/// implement a cascade. Web keeps real CSS inheritance via the stylesheet.
+#[derive(Clone, Default)]
+struct InheritedText {
+    color: Option<String>,
+    font_family: Option<String>,
+    font_size: Option<String>,
+    line_height: Option<String>,
+}
+
+fn fill_inherited(style: &mut HashMap<String, String>, inherited: &InheritedText) {
+    let pairs = [
+        ("color", &inherited.color),
+        ("fontFamily", &inherited.font_family),
+        ("fontSize", &inherited.font_size),
+        ("lineHeight", &inherited.line_height),
+    ];
+    for (key, value) in pairs {
+        if style.contains_key(key) {
+            continue;
+        }
+        if let Some(v) = value {
+            if !v.is_empty() {
+                style.insert(key.to_string(), v.clone());
+            }
+        }
+    }
+}
+
+fn next_inherited(style: &HashMap<String, String>, prev: &InheritedText) -> InheritedText {
+    InheritedText {
+        color: style.get("color").cloned().or_else(|| prev.color.clone()),
+        font_family: style
+            .get("fontFamily")
+            .cloned()
+            .or_else(|| prev.font_family.clone()),
+        font_size: style
+            .get("fontSize")
+            .cloned()
+            .or_else(|| prev.font_size.clone()),
+        line_height: style
+            .get("lineHeight")
+            .cloned()
+            .or_else(|| prev.line_height.clone()),
+    }
+}
+
 /// Native/desktop: flatten className + theme into inline style; strip className.
 fn resolve_element_styles_native(
     vnode: VNode,
     state: &themed_styler::State,
     platform: Platform,
     parent_font_px: f32,
+    inherited: &InheritedText,
 ) -> VNode {
     match vnode {
         VNode::Element {
@@ -223,6 +288,9 @@ fn resolve_element_styles_native(
             if platform == Platform::Desktop {
                 resolved_style = normalize_desktop_styles(resolved_style, parent_font_px);
                 apply_desktop_ui_defaults(&tag, &mut resolved_style, parent_font_px);
+            } else {
+                // Inline style already won. Fill only properties the node did not set.
+                fill_inherited(&mut resolved_style, inherited);
             }
 
             let element_font_px = if platform == Platform::Desktop {
@@ -230,6 +298,7 @@ fn resolve_element_styles_native(
             } else {
                 parent_font_px
             };
+            let child_inherited = next_inherited(&resolved_style, inherited);
 
             if !resolved_style.is_empty() {
                 props.insert("style".to_string(), PropValue::Style(resolved_style));
@@ -238,7 +307,9 @@ fn resolve_element_styles_native(
 
             let children: Vec<VNode> = children
                 .into_iter()
-                .map(|c| resolve_element_styles_native(c, state, platform, element_font_px))
+                .map(|c| {
+                    resolve_element_styles_native(c, state, platform, element_font_px, &child_inherited)
+                })
                 .collect();
 
             VNode::Element {
@@ -270,6 +341,7 @@ fn build_styler_state(
     let mut state = themed_styler::build_state_from_theme_json(&theme_json);
     state.display_density = display_density;
     state.scaled_density = scaled_density;
+    state.viewport_width = VIEWPORT_CSS_PX.with(|c| c.get());
     if let Some(name) = theme_name {
         let name = name.trim().to_lowercase();
         if !name.is_empty() && state.themes.contains_key(&name) {
@@ -278,6 +350,97 @@ fn build_styler_state(
     }
     state.prefers_color_scheme = Some(if prefers_dark { "dark" } else { "light" }.to_string());
     state
+}
+
+#[cfg(test)]
+mod inherited_style_tests {
+    use super::*;
+    use crate::vdom::{PropValue, VNode};
+
+    fn color_of(vnode: &VNode) -> Option<String> {
+        let VNode::Element { props, .. } = vnode else {
+            return None;
+        };
+        match props.get("style") {
+            Some(PropValue::Style(map)) => map.get("color").cloned(),
+            _ => None,
+        }
+    }
+
+    fn sample(child_class: Option<&str>) -> VNode {
+        let mut child_props = HashMap::new();
+        if let Some(class_name) = child_class {
+            child_props.insert(
+                "className".to_string(),
+                PropValue::String(class_name.to_string()),
+            );
+        }
+        let child = VNode::Element {
+            tag: "p".to_string(),
+            props: child_props,
+            children: vec![VNode::Text("Hi".to_string())],
+            key: None,
+        };
+        let mut props = HashMap::new();
+        props.insert(
+            "className".to_string(),
+            PropValue::String("fb-app".to_string()),
+        );
+        VNode::Element {
+            tag: "div".to_string(),
+            props,
+            children: vec![child],
+            key: None,
+        }
+    }
+
+    const THEME: &str = r##"
+themes:
+  dark:
+    variables:
+      cream: "#f5e6be"
+      gold: "#e8c872"
+    selectors:
+      ".fb-app":
+        color: "var(cream)"
+        flexDirection: "column"
+      ".gold":
+        color: "var(gold)"
+"##;
+
+    #[test]
+    fn child_inherits_parent_color() {
+        let (tree, _, _) = resolve_vnode_styles(
+            sample(None),
+            THEME,
+            Platform::Android,
+            1.0,
+            1.0,
+            Some("dark"),
+            true,
+        );
+        let VNode::Element { children, .. } = tree else {
+            panic!("root");
+        };
+        assert_eq!(color_of(&children[0]).as_deref(), Some("#f5e6be"));
+    }
+
+    #[test]
+    fn child_color_overrides_inherited() {
+        let (tree, _, _) = resolve_vnode_styles(
+            sample(Some("gold")),
+            THEME,
+            Platform::Android,
+            1.0,
+            1.0,
+            Some("dark"),
+            true,
+        );
+        let VNode::Element { children, .. } = tree else {
+            panic!("root");
+        };
+        assert_eq!(color_of(&children[0]).as_deref(), Some("#e8c872"));
+    }
 }
 
 fn value_to_style_string(v: &serde_json::Value) -> String {

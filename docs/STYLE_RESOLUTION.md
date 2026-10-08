@@ -41,7 +41,7 @@ export default function MyHook() {
 3. **Tailwind dynamic utilities** — e.g. `p-4`, `flex`, `gap-4`
 4. **Inline `style` prop** — wins over all
 
-Native: no cascade tree — later wins into one flat map. Web stylesheet: cascade via selectors / `html.dark` prefixes.
+Native: no cascade tree — later wins into one flat map. Text properties that CSS inherits (`color`, `fontFamily`, `fontSize`, `lineHeight`) are copied onto descendants that do not set them, so a host applies the map and does not walk parents. Box shorthands (`padding`, `margin`, and the two- to four-value forms such as `16px 20px`) are split into longhands before px conversion. A flex row's main size stays the content size unless `width` is set. When the host sets a CSS viewport width, `@media (min-width)` / `@media (max-width)` blocks in the theme override the base selector; width `0` leaves those blocks off. Web stylesheet: cascade via selectors / `html.dark` prefixes.
 
 ## Light / dark — contracts
 

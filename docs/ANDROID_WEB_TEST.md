@@ -2,7 +2,7 @@
 
 **Canonical tester doc for this crate.** Keep it current: if you change Android/web test behavior, update **Current state**, **Next steps**, and the **Progress log** in the same change (see [Agent instructions](#agent-instructions)).
 
-Last reviewed: **2026-08-15**.
+Last reviewed: **2026-10-05**.
 
 This is the build-and-compare loop. Do **not** start in the product Android client. Runtime first, same **client hooks** on web and Android, **web is the visual standard**.
 
@@ -67,7 +67,7 @@ export default function run(ctx, next) {
 | **Web test app** | Exists | `examples/wasm-test/` — `./scripts/test-wasm.sh` → `http://localhost:8765/examples/wasm-test/`. |
 | **Hook sync** | Incomplete | Demo JSX lives in both `android-demo/src/main/assets/hooks/` and `examples/wasm-test/hooks/`. **SoT is wasm-test.** Run `./scripts/sync-hooks.sh` to copy into the APK assets. Do not use product `relay-client-web` as the demo SoT. |
 | **Visual parity** | **Not signed off** | APK and wasm-test have not been compared section-by-section (text, theme tokens, flex, spacing). That is the current gate. |
-| **Product client** | Separate | `relay-client-android` = full RelayClient; copies `.so` after `scripts/build-android.sh`. Not the test harness. |
+| **Product client** | Separate | `relay-client-android` flavors `relay` and `flashback`. Copies `.so` after `scripts/build-android.sh`. Not the visual harness. Flashback’s Android hosts are checked in that park (`android-hosts.test.mjs`); shell resolution is `RemoteHookSessionTest`. |
 | **Desktop native** | Skipped | No Windows/macOS from-scratch UI. Desktop = web browser (or packaged web app). |
 | **iOS** | Later | Same native-prop translation as Android. |
 
@@ -152,6 +152,9 @@ Update this list when an item lands (date + one-line result). Do not leave stale
 
 Append dated bullets when testing moves. Newest first.
 
+- **2026-10-05** — Native style resolve applies theme `@media (min-width)` / `@media (max-width)` from the host viewport width. A phone picks the mobile padding block. Welcome overlay still comes from the web host, not the live Android stub. `hooks/app.jsx` visual parity is still unsigned.
+- **2026-10-05** — Android apply: multi-value padding/margin split into edges, row children wrap on the main axis, numeric min size and presentational width/height are honored, page background paints the scroll. Welcome overlay still comes from the web host, not the live Android stub. `hooks/app.jsx` visual parity is still unsigned.
+- **2026-10-05** — Product APKs are two flavors. Flashback example contract is the park’s `android-hosts.test.mjs` plus `RemoteHookSessionTest`. `hooks/app.jsx` visual parity is still unsigned.
 - **2026-08-15** — GitLab gateway project is `clevertree/relay-gateway`. `sync-hooks.sh` copies wasm-test → android-demo (not client-web / hook-transpiler).
 - **2026-08-15** — Terminology: client vs server hooks, `.relay.yaml` apps, why CleverScript (no Hermes/JS on Android; Rust helpers; CS is routing/orchestration). Repos table: `clevertree/relay` monorepo is archived.
 - **2026-08-15** — Tester doc created. APK + wasm-test exist; visual parity not signed off; hook sync still points at relay-client-web.

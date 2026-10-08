@@ -32,6 +32,8 @@ thread_local! {
     /// Last display density from JNI (for setThemeAndRender re-resolve).
     static LAST_DISPLAY_DENSITY: RefCell<f32> = RefCell::new(2.0);
     static LAST_SCALED_DENSITY: RefCell<f32> = RefCell::new(2.0);
+    /// CSS viewport width (px) for `@media (min/max-width)`.
+    static LAST_VIEWPORT_CSS_PX: RefCell<f32> = RefCell::new(0.0);
     /// Last system dark preference from JNI (UI_MODE_NIGHT).
     static LAST_PREFERS_DARK: RefCell<bool> = RefCell::new(false);
 }
@@ -368,8 +370,10 @@ impl Host for AndroidHost {
         let j: serde_json::Value = serde_json::from_str(&json_str).map_err(|e| e.to_string())?;
         Ok(Value::from_json(&j))
     }
-    fn navigate(&self, _path: &str) -> Result<(), String> {
-        Err("navigate not implemented on Android".to_string())
+    fn navigate(&self, path: &str) -> Result<(), String> {
+        crate::nav_intent::note_location_href(path);
+        crate::run_state::set_render_requested();
+        Ok(())
     }
     fn create_element(&self, tag: &str, props: &Value, children: &[Value]) -> Result<Value, String> {
         // Build element Value (JSX typically uses eval_jsx_element which doesn't call this;
@@ -436,6 +440,7 @@ pub extern "system" fn Java_com_clevertree_relayruntime_RelayRuntime_nativeRunHo
     prefers_dark: jboolean,
     display_density: jni::sys::jfloat,
     scaled_density: jni::sys::jfloat,
+    viewport_css_px: jni::sys::jfloat,
 ) -> jstring {
     let source = match jstring_to_string(&mut env, source) {
         Some(s) => s,
@@ -492,6 +497,12 @@ pub extern "system" fn Java_com_clevertree_relayruntime_RelayRuntime_nativeRunHo
     }
     LAST_DISPLAY_DENSITY.with(|c| *c.borrow_mut() = d_density);
     LAST_SCALED_DENSITY.with(|c| *c.borrow_mut() = s_density);
+    let mut viewport = viewport_css_px;
+    if !viewport.is_finite() || viewport < 0.0 {
+        viewport = 0.0;
+    }
+    LAST_VIEWPORT_CSS_PX.with(|c| *c.borrow_mut() = viewport);
+    crate::style_resolve::set_viewport_css_px(viewport);
     LAST_PREFERS_DARK.with(|c| *c.borrow_mut() = prefers_dark_bool);
 
     INJECTED_CSS.with(|c| *c.borrow_mut() = String::new());
@@ -653,6 +664,8 @@ pub extern "system" fn Java_com_clevertree_relayruntime_RelayRuntime_nativeSetTh
                 let display_d = LAST_DISPLAY_DENSITY.with(|c| *c.borrow());
                 let scaled_d = LAST_SCALED_DENSITY.with(|c| *c.borrow());
                 let prefers_dark = LAST_PREFERS_DARK.with(|c| *c.borrow());
+                let viewport = LAST_VIEWPORT_CSS_PX.with(|c| *c.borrow());
+                crate::style_resolve::set_viewport_css_px(viewport);
                 let (resolved, _, state_opt) = resolve_vnode_styles(
                     vnode,
                     &theme_yaml,
@@ -690,6 +703,37 @@ pub extern "system" fn Java_com_clevertree_relayruntime_RelayRuntime_nativeGetCl
     _class: JClass,
 ) -> jint {
     crate::session_theme::get_client_live_phase() as jint
+}
+
+/// Pending path from `navigate()` / location href. Empty string if none.
+#[no_mangle]
+pub extern "system" fn Java_com_clevertree_relayruntime_RelayRuntime_nativeTakeLocationHref(
+    mut env: JNIEnv,
+    _class: JClass,
+) -> jstring {
+    let path = crate::nav_intent::take_location_href().unwrap_or_default();
+    new_jstring(&mut env, &path)
+}
+
+/// JSON object of CleverScript localStorage entries.
+#[no_mangle]
+pub extern "system" fn Java_com_clevertree_relayruntime_RelayRuntime_nativeExportLocalStorage(
+    mut env: JNIEnv,
+    _class: JClass,
+) -> jstring {
+    new_jstring(&mut env, &run_state::local_storage_to_json())
+}
+
+/// Replace CleverScript localStorage from a JSON object.
+#[no_mangle]
+pub extern "system" fn Java_com_clevertree_relayruntime_RelayRuntime_nativeImportLocalStorage(
+    mut env: JNIEnv,
+    _class: JClass,
+    json: JString,
+) {
+    if let Some(s) = jstring_to_string(&mut env, json) {
+        run_state::replace_local_storage_json(&s);
+    }
 }
 
 /// Backward-compatible shell-live flag (phase ≥ 1).

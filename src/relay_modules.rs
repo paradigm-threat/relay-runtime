@@ -11,6 +11,7 @@ pub const RELAY_DATE: &str = "@relay/date";
 pub const RELAY_CATALOG: &str = "@relay/catalog";
 pub const RELAY_UI: &str = "@relay/ui";
 pub const RELAY_TTS: &str = "@relay/tts";
+pub const RELAY_GALLERY: &str = "@relay/gallery";
 
 /// Resolve pure `@relay/*` modules. Returns `None` for unknown specs.
 pub fn try_load_relay_module(path: &str) -> Option<Value> {
@@ -21,6 +22,7 @@ pub fn try_load_relay_module(path: &str) -> Option<Value> {
         RELAY_CATALOG | "@relay/catalog.js" => Some(catalog_module()),
         RELAY_UI | "@relay/ui.js" => Some(ui_module()),
         RELAY_TTS | "@relay/tts.js" => Some(tts_module()),
+        RELAY_GALLERY | "@relay/gallery.js" => Some(gallery_module()),
         _ => None,
     }
 }
@@ -2359,6 +2361,465 @@ fn tts_module() -> Value {
             Err(last_err)
         }),
     );
+    named_exports(m)
+}
+
+// --- gallery ---
+
+pub const POP_IMAGE_TAG: &str = "relay-pop-image";
+pub const IMAGE_GALLERY_TAG: &str = "relay-image-gallery";
+
+#[derive(Clone, Default)]
+struct GalleryImageRec {
+    src: String,
+    alt: String,
+    high_res_src: String,
+    caption: String,
+}
+
+#[derive(Default)]
+struct GalleryState {
+    images: Vec<GalleryImageRec>,
+    override_list: Option<Vec<GalleryImageRec>>,
+    index: i32,
+    open: bool,
+    rev: u64,
+}
+
+thread_local! {
+    static GALLERY_STATE: std::cell::RefCell<GalleryState> =
+        std::cell::RefCell::new(GalleryState::default());
+}
+
+fn gallery_prop_str(props: &HashMap<String, Value>, key: &str) -> String {
+    match props.get(key) {
+        Some(Value::String(s)) => s.clone(),
+        Some(Value::Number(n)) => n.to_string(),
+        _ => String::new(),
+    }
+}
+
+fn gallery_img_from_obj(obj: &HashMap<String, Value>) -> Option<GalleryImageRec> {
+    let src = gallery_prop_str(obj, "src");
+    if src.is_empty() {
+        return None;
+    }
+    let alt = gallery_prop_str(obj, "alt");
+    let high_res_src = gallery_prop_str(obj, "highResSrc");
+    let caption = match obj.get("children") {
+        Some(Value::String(s)) => s.clone(),
+        Some(Value::Array(a)) if a.len() == 1 => match &a[0] {
+            Value::String(s) => s.clone(),
+            Value::Object(o) => match o.get("text") {
+                Some(Value::String(s)) => s.clone(),
+                _ => String::new(),
+            },
+            _ => String::new(),
+        },
+        _ => String::new(),
+    };
+    Some(GalleryImageRec {
+        src,
+        alt,
+        high_res_src,
+        caption,
+    })
+}
+
+fn gallery_active_list(s: &GalleryState) -> &[GalleryImageRec] {
+    if let Some(ref o) = s.override_list {
+        o.as_slice()
+    } else {
+        s.images.as_slice()
+    }
+}
+
+/// Notify browser `__relayGalleryCall(op, arg)` when present (WASM host).
+fn gallery_host_notify(op: &str, arg: &str) {
+    #[cfg(target_arch = "wasm32")]
+    {
+        use wasm_bindgen::JsCast;
+        let g = js_sys::global();
+        if let Ok(v) = js_sys::Reflect::get(&g, &wasm_bindgen::JsValue::from_str("__relayGalleryCall")) {
+            if let Ok(f) = v.dyn_into::<js_sys::Function>() {
+                let _ = f.call2(
+                    &wasm_bindgen::JsValue::NULL,
+                    &wasm_bindgen::JsValue::from_str(op),
+                    &wasm_bindgen::JsValue::from_str(arg),
+                );
+            }
+        }
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let _ = (op, arg);
+    }
+}
+
+fn gallery_module() -> Value {
+    let mut m = HashMap::new();
+
+    m.insert(
+        "PopImage".into(),
+        Value::Native(|args| {
+            let props = arg_obj(args, 0).unwrap_or_default();
+            let src = gallery_prop_str(&props, "src");
+            let mut out = HashMap::new();
+            out.insert("src".into(), Value::String(src));
+            for key in ["alt", "className", "highResSrc", "aspectRatio"] {
+                if let Some(Value::String(s)) = props.get(key) {
+                    if !s.is_empty() {
+                        out.insert(key.into(), Value::String(s.clone()));
+                    }
+                }
+            }
+            if let Some(Value::Number(n)) = props.get("retry") {
+                out.insert("retry".into(), Value::Number(*n));
+            }
+            let children = match props.get("children") {
+                Some(Value::Array(a)) => a.clone(),
+                Some(other) => vec![other.clone()],
+                None => vec![],
+            };
+            Ok(el(POP_IMAGE_TAG, out, children))
+        }),
+    );
+
+    m.insert(
+        "ImageGalleryRoot".into(),
+        Value::Native(|args| {
+            let props = arg_obj(args, 0).unwrap_or_default();
+            let mut out = HashMap::new();
+            if let Some(Value::String(s)) = props.get("className") {
+                if !s.is_empty() {
+                    out.insert("className".into(), Value::String(s.clone()));
+                }
+            }
+            Ok(el(IMAGE_GALLERY_TAG, out, vec![]))
+        }),
+    );
+
+    // Path helpers (same as @relay/path) for tip convenience.
+    m.insert(
+        "safeImgDomId".into(),
+        Value::Native(|args| {
+            let src = arg_str(args, 0).unwrap_or_default();
+            Ok(Value::String(path_safe_img_dom_id(&src)))
+        }),
+    );
+    m.insert(
+        "readHashImgSrc".into(),
+        Value::Native(|args| {
+            let hash = arg_str(args, 0).unwrap_or_default();
+            Ok(Value::String(path_read_hash_img_src(&hash)))
+        }),
+    );
+    m.insert(
+        "galleryImgHash".into(),
+        Value::Native(|args| {
+            let src = arg_str(args, 0).unwrap_or_default();
+            Ok(Value::String(path_gallery_img_hash(&src)))
+        }),
+    );
+    m.insert(
+        "galleryDisplaySrc".into(),
+        Value::Native(|args| {
+            let src = arg_str(args, 0).unwrap_or_default();
+            let hi = arg_str(args, 1).unwrap_or_default();
+            Ok(Value::String(path_gallery_display_src(&src, &hi)))
+        }),
+    );
+
+    m.insert(
+        "registerGalleryImage".into(),
+        Value::Native(|args| {
+            let obj = arg_obj(args, 0).unwrap_or_default();
+            if let Some(img) = gallery_img_from_obj(&obj) {
+                let src = img.src.clone();
+                GALLERY_STATE.with(|cell| {
+                    let mut s = cell.borrow_mut();
+                    if s.images.iter().any(|i| i.src == src) {
+                        return;
+                    }
+                    s.images.push(img);
+                    s.rev += 1;
+                });
+                gallery_host_notify("register", &src);
+            }
+            Ok(Value::Null)
+        }),
+    );
+
+    m.insert(
+        "unregisterGalleryImage".into(),
+        Value::Native(|args| {
+            let src = arg_str(args, 0).unwrap_or_default();
+            if src.is_empty() {
+                return Ok(Value::Null);
+            }
+            GALLERY_STATE.with(|cell| {
+                let mut s = cell.borrow_mut();
+                let before = s.images.len();
+                s.images.retain(|i| i.src != src);
+                if s.images.len() != before {
+                    s.rev += 1;
+                }
+            });
+            gallery_host_notify("unregister", &src);
+            Ok(Value::Null)
+        }),
+    );
+
+    m.insert(
+        "syncGalleryImageMeta".into(),
+        Value::Native(|args| {
+            let obj = arg_obj(args, 0).unwrap_or_default();
+            if let Some(img) = gallery_img_from_obj(&obj) {
+                let src = img.src.clone();
+                GALLERY_STATE.with(|cell| {
+                    let mut s = cell.borrow_mut();
+                    if let Some(slot) = s.images.iter_mut().find(|i| i.src == src) {
+                        *slot = img;
+                    }
+                });
+                gallery_host_notify("sync", &src);
+            }
+            Ok(Value::Null)
+        }),
+    );
+
+    m.insert(
+        "openGalleryAt".into(),
+        Value::Native(|args| {
+            let src = arg_str(args, 0).unwrap_or_default();
+            GALLERY_STATE.with(|cell| {
+                let mut s = cell.borrow_mut();
+                let list = gallery_active_list(&s);
+                let idx = list.iter().position(|i| i.src == src);
+                if let Some(i) = idx {
+                    s.override_list = None;
+                    s.index = i as i32;
+                    s.open = true;
+                } else {
+                    s.override_list = Some(vec![GalleryImageRec {
+                        src: src.clone(),
+                        alt: String::new(),
+                        high_res_src: String::new(),
+                        caption: String::new(),
+                    }]);
+                    s.index = 0;
+                    s.open = true;
+                }
+                s.rev += 1;
+            });
+            gallery_host_notify("openAt", &src);
+            Ok(Value::Null)
+        }),
+    );
+
+    m.insert(
+        "openGallery".into(),
+        Value::Native(|args| {
+            let items = arg_arr(args, 0).unwrap_or_default();
+            let start = arg_num(args, 1).unwrap_or(0.0) as i32;
+            let mut list = Vec::new();
+            for v in items {
+                if let Value::Object(o) = v {
+                    if let Some(img) = gallery_img_from_obj(&o) {
+                        list.push(img);
+                    }
+                }
+            }
+            if list.is_empty() {
+                return Ok(Value::Null);
+            }
+            let mut idx = start;
+            if idx < 0 {
+                idx = 0;
+            }
+            if idx as usize >= list.len() {
+                idx = (list.len() - 1) as i32;
+            }
+            let first = list[idx as usize].src.clone();
+            GALLERY_STATE.with(|cell| {
+                let mut s = cell.borrow_mut();
+                s.override_list = Some(list);
+                s.index = idx;
+                s.open = true;
+                s.rev += 1;
+            });
+            gallery_host_notify("openAt", &first);
+            Ok(Value::Null)
+        }),
+    );
+
+    m.insert(
+        "closeGallery".into(),
+        Value::Native(|_args| {
+            GALLERY_STATE.with(|cell| {
+                let mut s = cell.borrow_mut();
+                s.open = false;
+                s.override_list = None;
+                s.rev += 1;
+            });
+            gallery_host_notify("close", "");
+            Ok(Value::Null)
+        }),
+    );
+
+    m.insert(
+        "galleryGoNext".into(),
+        Value::Native(|_args| {
+            GALLERY_STATE.with(|cell| {
+                let mut s = cell.borrow_mut();
+                let n = gallery_active_list(&s).len() as i32;
+                if n <= 1 {
+                    return;
+                }
+                s.index = (s.index + 1) % n;
+                s.rev += 1;
+            });
+            gallery_host_notify("next", "");
+            Ok(Value::Null)
+        }),
+    );
+
+    m.insert(
+        "galleryGoPrev".into(),
+        Value::Native(|_args| {
+            GALLERY_STATE.with(|cell| {
+                let mut s = cell.borrow_mut();
+                let n = gallery_active_list(&s).len() as i32;
+                if n <= 1 {
+                    return;
+                }
+                s.index = (s.index - 1 + n) % n;
+                s.rev += 1;
+            });
+            gallery_host_notify("prev", "");
+            Ok(Value::Null)
+        }),
+    );
+
+    m.insert(
+        "galleryIsOpen".into(),
+        Value::Native(|_args| {
+            Ok(Value::Bool(GALLERY_STATE.with(|cell| cell.borrow().open)))
+        }),
+    );
+
+    m.insert(
+        "galleryIndex".into(),
+        Value::Native(|_args| {
+            Ok(Value::Number(
+                GALLERY_STATE.with(|cell| cell.borrow().index as f64),
+            ))
+        }),
+    );
+
+    m.insert(
+        "galleryRev".into(),
+        Value::Native(|_args| {
+            Ok(Value::Number(
+                GALLERY_STATE.with(|cell| cell.borrow().rev as f64),
+            ))
+        }),
+    );
+
+    m.insert(
+        "galleryImages".into(),
+        Value::Native(|_args| {
+            GALLERY_STATE.with(|cell| {
+                let s = cell.borrow();
+                let list = gallery_active_list(&s);
+                let arr: Vec<Value> = list
+                    .iter()
+                    .map(|img| {
+                        let mut o = HashMap::new();
+                        o.insert("src".into(), Value::String(img.src.clone()));
+                        o.insert("alt".into(), Value::String(img.alt.clone()));
+                        o.insert("highResSrc".into(), Value::String(img.high_res_src.clone()));
+                        if !img.caption.is_empty() {
+                            o.insert("children".into(), Value::String(img.caption.clone()));
+                        }
+                        Value::Object(o)
+                    })
+                    .collect();
+                Ok(Value::Array(arr))
+            })
+        }),
+    );
+
+    m.insert(
+        "gallerySubscribe".into(),
+        Value::Native(|_args| {
+            // Host CE owns subscriptions; CS subscribe is a no-op unsubscribe fn.
+            Ok(Value::Native(|_a| Ok(Value::Null)))
+        }),
+    );
+
+    m.insert(
+        "setGalleryHash".into(),
+        Value::Native(|args| {
+            let src = arg_str(args, 0).unwrap_or_default();
+            gallery_host_notify("setHash", &src);
+            Ok(Value::Null)
+        }),
+    );
+
+    // Object form `gallery.registerGalleryImage(...)` for tip parity with PT store.
+    let mut gallery_obj = HashMap::new();
+    for key in [
+        "registerGalleryImage",
+        "unregisterGalleryImage",
+        "syncGalleryImageMeta",
+        "openGalleryAt",
+        "openGallery",
+        "closeGallery",
+        "galleryGoNext",
+        "galleryGoPrev",
+        "galleryIsOpen",
+        "galleryIndex",
+        "galleryRev",
+        "galleryImages",
+        "gallerySubscribe",
+        "setGalleryHash",
+        "safeImgDomId",
+        "readHashImgSrc",
+        "galleryImgHash",
+        "galleryDisplaySrc",
+    ] {
+        if let Some(v) = m.get(key) {
+            gallery_obj.insert(key.into(), v.clone());
+        }
+    }
+    // Alias readHashImgSrc on gallery object to read from location when no arg — tip uses gallery.readHashImgSrc().
+    gallery_obj.insert(
+        "readHashImgSrc".into(),
+        Value::Native(|args| {
+            if let Some(h) = arg_str(args, 0) {
+                return Ok(Value::String(path_read_hash_img_src(&h)));
+            }
+            // Host bridge may fill; SSR returns empty.
+            Ok(Value::String(String::new()))
+        }),
+    );
+    gallery_obj.insert(
+        "galleryDisplaySrc".into(),
+        Value::Native(|args| {
+            // Accept img object or (src, highResSrc)
+            if let Some(obj) = arg_obj(args, 0) {
+                let src = gallery_prop_str(&obj, "src");
+                let hi = gallery_prop_str(&obj, "highResSrc");
+                return Ok(Value::String(path_gallery_display_src(&src, &hi)));
+            }
+            let src = arg_str(args, 0).unwrap_or_default();
+            let hi = arg_str(args, 1).unwrap_or_default();
+            Ok(Value::String(path_gallery_display_src(&src, &hi)))
+        }),
+    );
+    m.insert("gallery".into(), Value::Object(gallery_obj));
+
     named_exports(m)
 }
 

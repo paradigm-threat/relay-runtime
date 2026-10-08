@@ -16,6 +16,17 @@ import init, {
   get_client_live_phase,
   get_current_theme_name,
 } from '../wasm/relay_runtime_pkg/relay_runtime.js';
+import {
+  installRelayGalleryHost,
+  buildRelayPopImage,
+  buildRelayImageGallery,
+} from './relay-gallery.js';
+
+try {
+  installRelayGalleryHost();
+} catch (_) {
+  /* gallery CE optional during early boot */
+}
 
 let _styleId = 'relay-ssr-theme';
 
@@ -1361,7 +1372,15 @@ function elementChildNodes(parent) {
 }
 
 function expectedDomTag(tag) {
-  if (tag === 'relay-video-player' || tag === 'relay-audio-player' || tag === 'relay-hook-renderer') return 'DIV';
+  if (
+    tag === 'relay-video-player' ||
+    tag === 'relay-audio-player' ||
+    tag === 'relay-hook-renderer' ||
+    tag === 'relay-pop-image' ||
+    tag === 'relay-image-gallery'
+  ) {
+    return 'DIV';
+  }
   if (tag === 'fragment') return null;
   return String(tag || 'div').toUpperCase();
 }
@@ -1825,6 +1844,18 @@ export function vnodeToDom(v, invokeHandler = invoke_handler, onAfterInvoke = nu
     if (tag === 'relay-audio-player') {
       return buildRelayAudioPlayer(props || {}, invokeHandler, onAfterInvoke);
     }
+    if (tag === 'relay-pop-image') {
+      try {
+        installRelayGalleryHost();
+      } catch (_) {}
+      return buildRelayPopImage(props || {});
+    }
+    if (tag === 'relay-image-gallery') {
+      try {
+        installRelayGalleryHost();
+      } catch (_) {}
+      return buildRelayImageGallery(props || {});
+    }
     const parkEl = tryBuildParkNative(tag, props || {}, invokeHandler, onAfterInvoke);
     if (parkEl) return parkEl;
     if (tag === 'fragment') {
@@ -1847,6 +1878,18 @@ export function vnodeToDom(v, invokeHandler = invoke_handler, onAfterInvoke = nu
     }
     if (rawTag === 'relay-audio-player') {
       return buildRelayAudioPlayer(v.props || {}, invokeHandler, onAfterInvoke);
+    }
+    if (rawTag === 'relay-pop-image') {
+      try {
+        installRelayGalleryHost();
+      } catch (_) {}
+      return buildRelayPopImage(v.props || {});
+    }
+    if (rawTag === 'relay-image-gallery') {
+      try {
+        installRelayGalleryHost();
+      } catch (_) {}
+      return buildRelayImageGallery(v.props || {});
     }
     const parkEl2 = tryBuildParkNative(rawTag, v.props || {}, invokeHandler, onAfterInvoke);
     if (parkEl2) return parkEl2;

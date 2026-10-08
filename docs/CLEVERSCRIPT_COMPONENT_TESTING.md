@@ -114,6 +114,7 @@ Use after layer 1 is green:
 | Park SSR markers / placeholders | [`park-local.sh`](../../relay-gateway/scripts/park-local.sh) `smoke` / tip `ssr-smoke.sh` |
 | Hydrate + real QUERY | park-local serve + browser / MCP |
 | Cross-platform paint | [`ANDROID_WEB_TEST.md`](ANDROID_WEB_TEST.md) |
+| Flashback Android hosts | Park tip `android-hosts.test.mjs` (file contract) plus a mini `run_hook_persistent` only when behavior, not source shape, is in question |
 
 Do **not** treat browser chevron rotation or theme paint as the only DirNav contract.
 

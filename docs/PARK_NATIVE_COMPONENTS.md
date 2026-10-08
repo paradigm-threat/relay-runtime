@@ -27,7 +27,7 @@ Under the park tip, e.g. `hooks/client/native/`:
 |------|------|
 | `Affirmation.js` | CleverScript stub: factory returns a VNode with a custom tag / `data-relay-park-native` + props (no `document`) |
 | `Affirmation.host.js` (or `Affirmation.web.js`) | Web host builder: modern JS/CSS, may use `document` / `localStorage` — **never** imported by CleverScript |
-| `Affirmation.android.js` | Android host stub or bridge until a Kotlin view lands |
+| `Affirmation.android.js` | CleverScript the Android shell prefers over `Foo.js`. Same exports as the stub. Web `*.host.js` is never loaded into that module map |
 | `registry.host.js` | Registers tag → builder with the web host (optional; tip inject may load hosts directly) |
 
 Module resolution prefers `Foo.<platform>.js` then `Foo.js` (see relay-runtime host resolve).
@@ -54,7 +54,9 @@ Events: call `invokeHandler(handlerId)` then optional `onAfterInvoke()` (same pa
 | Layer | What |
 |-------|------|
 | Layer 1 | CleverScript stub emits expected tag + props (`CLEVERSCRIPT_COMPONENT_TESTING.md`) |
-| Host isolation | Playwright / vitest against `*.web.js` builders alone (no full park boot) |
+| Host isolation | Playwright against `*.host.js` builders alone (no full park boot) |
+| Android file contract | Node check in the park tip. Flashback: `hooks/client/native/android-hosts.test.mjs` |
+| Shell resolve | Product client unit test: `Foo.android.js` before `Foo.js`, skip `*.host.js`, OPTIONS entry path |
 | Park smoke | CDP / fleet after publish |
 
 ## Anti-patterns

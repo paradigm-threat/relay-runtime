@@ -13,7 +13,7 @@ When CleverScript runs as **`server.hooks.*`** modules (`.cs`), the relay-gatewa
 - **`@relay/git`** — `readFile`, `readFileBase64`
 - **`@relay/search/sqlite`** / **`@relay/search/redb`** — `search(ctx)` for QUERY (Rust FTS / filter); optional `config` path (default tip `search.yaml`); preferred over returning `{ plugin: "sqlite" }`
 - On GET / raster resize paths only: **`@relay/image`**, **`@relay/ipfs`**, **`@relay/md`**
-- Always (server + client SSR/WASM): **`@relay/util`**, **`@relay/path`**, **`@relay/date`**, **`@relay/catalog`**, **`@relay/ui`** — tip ergonomics (sort/take, basename, ChangeLog date formats, dir tree, Link/RadioTabs/cachedGet)
+- Always (server + client SSR/WASM): **`@relay/util`**, **`@relay/path`**, **`@relay/date`**, **`@relay/catalog`**, **`@relay/ui`**, **`@relay/gallery`** — tip ergonomics (sort/take, basename, ChangeLog date formats, dir tree, Link/RadioTabs/cachedGet, PopImage / fullscreen gallery)
 
 Top-level **`import { … } from '@relay/…'`**. The global **`Relay`** is **`null`**; prefer imports for new scripts.
 
@@ -25,6 +25,7 @@ Top-level **`import { … } from '@relay/…'`**. The global **`Relay`** is **`n
 | `@relay/catalog` | `parseNavIndexTxt`, `extractMarkdownHeadings`, `contentKind`, `buildDirTree`, `dirExpandPaths`, `dirTreeNode`, `dirTreeHasKids`, `autoIndexDirFromPath`, `shouldTryDirectoryIndex`, `dirIndexListing`, `nestTocItems`, `publishedFromBlogPath`, `neighborPaths`, `isFeelingLuckyCandidate`, `pickFeelingLuckyPath` |
 | `@relay/ui` | `cachedGet`, `Link`, `RadioTabs`, `safeProps` / `omitUndefined` |
 | `@relay/tts` | `synthesize({ text, voiceId?, baseUrl?, endpoints? })` → data URL; `AudioPlayer` → `relay-audio-player` |
+| `@relay/gallery` | `PopImage` → `relay-pop-image` CE; `ImageGalleryRoot` → `relay-image-gallery` CE; `gallery` store (register/open/close/next/prev); path helpers (`safeImgDomId`, `galleryDisplaySrc`, …). No npm React — web hosts are Custom Elements with soft 404 retry/backoff. |
 
 **`fetch` binary bodies:** pass `{ responseType: 'base64' }` in options; response may include **`base64`** + **`contentType`** (web XHR). Used by `@relay/tts.synthesize` for Piper `POST /tts`.
 

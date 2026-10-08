@@ -10,9 +10,13 @@ import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
 import android.widget.Button
+import android.widget.CheckBox
+import android.widget.HorizontalScrollView
+import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
+import java.net.URL
 import com.clevertree.relayruntime.RelayRuntime
 import org.json.JSONObject
 
@@ -104,9 +108,23 @@ class VNodeRenderer(private val context: Context) {
 
         when (tag.lowercase()) {
             "relay-hook-renderer" -> return buildNestedHookRenderer(props, onRenderRequested)
+            "style", "script", "link", "meta", "noscript" -> return View(context).apply {
+                visibility = View.GONE
+            }
             else -> { /* fall through */ }
         }
+        if (wantsHorizontalScroll(props)) {
+            return buildHorizontalRow(props, children, onRenderRequested)
+        }
         val view = when (tag.lowercase()) {
+            "img" -> ImageView(context).apply {
+                scaleType = ImageView.ScaleType.CENTER_CROP
+                adjustViewBounds = true
+            }
+            "input", "checkbox" -> {
+                val type = propString(props, "type")?.lowercase()
+                if (tag.equals("checkbox", true) || type == "checkbox") CheckBox(context) else Button(context)
+            }
             "button" -> Button(context)
             "h1", "h2", "h3", "h4", "h5", "h6" -> TextView(context).apply {
                 textSize = headingSize(tag)
@@ -123,6 +141,8 @@ class VNodeRenderer(private val context: Context) {
         }
 
         applyProps(view, tag, props, onRenderRequested)
+        if (view is ImageView) loadImage(view, propString(props, "src"))
+        markFocusable(view, tag, props)
 
         if (children != null) {
             if (view is ViewGroup) {
@@ -371,6 +391,67 @@ class VNodeRenderer(private val context: Context) {
                 }
             }
         }
+    }
+
+    private fun wantsHorizontalScroll(props: JSONObject): Boolean {
+        val flag = propString(props, "data-relay-scroll") ?: propString(props, "dataRelayScroll")
+        if (flag == "x") return true
+        val style = styleFromProps(props) ?: return false
+        val dir = styleValue(style, "flexDirection").lowercase()
+        val overflow = (styleValue(style, "overflowX") + styleValue(style, "overflow")).lowercase()
+        return dir == "row" && (overflow.contains("auto") || overflow.contains("scroll"))
+    }
+
+    private fun buildHorizontalRow(
+        props: JSONObject,
+        children: org.json.JSONArray?,
+        onRenderRequested: () -> Unit,
+    ): View {
+        val row = LinearLayout(context).apply { orientation = LinearLayout.HORIZONTAL }
+        val scroller = HorizontalScrollView(context)
+        scroller.addView(row)
+        if (children != null) {
+            for (i in 0 until children.length()) {
+                val childView = try {
+                    parseAndBuild(children.get(i).toString(), onRenderRequested)
+                } catch (_: Exception) {
+                    null
+                }
+                if (childView != null) {
+                    val lp = LinearLayout.LayoutParams(
+                        ViewGroup.LayoutParams.WRAP_CONTENT,
+                        ViewGroup.LayoutParams.WRAP_CONTENT,
+                    )
+                    lp.marginEnd = dp(12)
+                    row.addView(childView, lp)
+                }
+            }
+        }
+        applyProps(scroller, "div", props, onRenderRequested)
+        markFocusable(scroller, "div", props)
+        return scroller
+    }
+
+    private fun markFocusable(view: View, tag: String, props: JSONObject) {
+        val interactive = tag.lowercase() in setOf("a", "button", "input", "checkbox") || view.isClickable
+        if (!interactive) return
+        view.isFocusable = true
+        view.isFocusableInTouchMode = true
+        view.setOnFocusChangeListener { v, has -> v.elevation = if (has) 8f else 0f }
+    }
+
+    private fun loadImage(view: ImageView, src: String?) {
+        val url = src?.trim().orEmpty()
+        if (!url.startsWith("http://") && !url.startsWith("https://")) return
+        Thread {
+            try {
+                val bytes = URL(url).openStream().use { it.readBytes() }
+                val bmp = android.graphics.BitmapFactory.decodeByteArray(bytes, 0, bytes.size) ?: return@Thread
+                view.post { view.setImageBitmap(bmp) }
+            } catch (e: Exception) {
+                Log.w(TAG, "img load failed $url", e)
+            }
+        }.start()
     }
 
     private fun applyRelayTypeface(view: TextView, style: JSONObject) {
