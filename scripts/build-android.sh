@@ -18,12 +18,13 @@ fi
 echo "🔨 Building relay-runtime for Android..."
 echo ""
 
-# Build aarch64 (arm64-v8a) and x86_64 (emulator)
+# Build aarch64 (arm64-v8a), armv7 (Fire TV / 32-bit), and x86_64 (emulator)
 echo "  Building aarch64-linux-android (arm64-v8a)..."
 cargo build --target aarch64-linux-android --lib --release
+echo "  Building armv7-linux-androideabi (armeabi-v7a)..."
+cargo build --target armv7-linux-androideabi --lib --release 2>/dev/null || echo "    (skipped - needs .cargo/config.toml linker)"
 echo "  Building x86_64-linux-android (emulator)..."
 cargo build --target x86_64-linux-android --lib --release 2>/dev/null || echo "    (skipped - needs .cargo/config.toml linker)"
-
 echo ""
 echo "📦 Copying libs to android/jniLibs..."
 
