@@ -1530,7 +1530,7 @@ export function promoteSsrShellWithoutWipe(container, opts = {}) {
 }
 
 const SSR_PLACEHOLDER_SELECTORS =
-  '[data-pt-dirnav-ssr],[data-pt-changelog-ssr],[data-pt-autoindex-ssr],[data-pt-deferred-ssr]';
+  '[data-pt-dirnav-ssr],[data-pt-changelog-ssr],[data-pt-flashback-ssr],[data-pt-autoindex-ssr],[data-pt-deferred-ssr]';
 
 function cssEscapeIdent(s) {
   try {
@@ -1558,7 +1558,7 @@ export function replaceSsrPlaceholdersFromVnode(container, vnode, invokeHandler,
   };
   container.querySelectorAll(SSR_PLACEHOLDER_SELECTORS).forEach(add);
   // Re-upgrade already-filled islands on later phases (markers removed).
-  ;['Site directory', 'Directory', 'Change log', 'Auto index', 'Deferred section'].forEach((label) => {
+  ;['Site directory', 'Directory', 'Change log', 'Flashback now showing', 'Auto index', 'Deferred section'].forEach((label) => {
     container.querySelectorAll(`[aria-label="${cssEscapeIdent(label)}"]`).forEach(add);
   });
   if (!targets.length) return false;
@@ -1577,6 +1577,8 @@ export function replaceSsrPlaceholdersFromVnode(container, vnode, invokeHandler,
         next = searchRoot.querySelector('.pt-dir-nav');
       } else if (oldEl.classList?.contains('pt-changelog') || oldEl.hasAttribute('data-pt-changelog-ssr')) {
         next = searchRoot.querySelector('.pt-changelog');
+      } else if (oldEl.classList?.contains('pt-flashback-now') || oldEl.hasAttribute('data-pt-flashback-ssr')) {
+        next = searchRoot.querySelector('.pt-flashback-now');
       } else if (
         oldEl.hasAttribute('data-pt-autoindex-ssr') ||
         oldEl.hasAttribute('data-pt-dir-index') ||
