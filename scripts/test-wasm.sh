@@ -29,8 +29,9 @@ echo "   For debugging with breakpoints, use: wasm-pack build --target web --out
 cd "$REPO_ROOT"
 wasm-pack build --target web --out-dir "$PKG_DIR"
 
-# Copy web wrapper (bootstrap, vnodeToDom) into pkg for zero-config integration
+# Copy web wrapper (bootstrap, vnodeToDom, gallery CE) into pkg for zero-config integration
 cp "$REPO_ROOT/js/relay-runtime-web.js" "$PKG_DIR/relay-runtime-web.js"
+cp "$REPO_ROOT/js/relay-gallery.js" "$PKG_DIR/relay-gallery.js"
 cp "$REPO_ROOT/js/relay-runtime-web.d.ts" "$PKG_DIR/relay-runtime-web.d.ts" 2>/dev/null || true
 
 # Update package.json: main=relay-runtime-web.js, add exports, include wrapper in files
@@ -38,7 +39,9 @@ cp "$REPO_ROOT/js/relay-runtime-web.d.ts" "$PKG_DIR/relay-runtime-web.d.ts" 2>/d
 const fs = require('fs');
 const p = require('./package.json');
 p.main = 'relay-runtime-web.js';
-if (!p.files.includes('relay-runtime-web.js')) p.files.push('relay-runtime-web.js');
+for (const f of ['relay-runtime-web.js', 'relay-gallery.js']) {
+  if (fs.existsSync('./' + f) && !p.files.includes(f)) p.files.push(f);
+}
 if (fs.existsSync('./relay-runtime-web.d.ts') && !p.files.includes('relay-runtime-web.d.ts')) p.files.push('relay-runtime-web.d.ts');
 p.exports = { '.': './relay-runtime-web.js', './wasm': './relay_runtime.js' };
 if (fs.existsSync('./relay-runtime-web.d.ts')) p.types = 'relay-runtime-web.d.ts';

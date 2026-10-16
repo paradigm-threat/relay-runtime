@@ -827,6 +827,12 @@ export function installRelayGalleryCustomElements() {
       'relay-image-gallery',
       class extends HTMLElement {
         connectedCallback() {
+          // Host must never keep theme overlay classes (e.g. `.pt-gallery` fullscreen).
+          // Those styles belong on the inner overlay root built below.
+          try {
+            this.removeAttribute('class');
+            this.style.display = 'contents';
+          } catch (_) {}
           if (this._relayBuilt) return;
           this._relayBuilt = true;
           const built = buildGalleryOverlayElement();
