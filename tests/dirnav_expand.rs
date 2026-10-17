@@ -85,6 +85,11 @@ fn tip_modules() -> HashMap<String, String> {
     );
     add(
         &mut m,
+        "hooks/client/strUtil.jsx",
+        include_str!("fixtures/paradigm-threat-files/hooks/client/strUtil.jsx"),
+    );
+    add(
+        &mut m,
         "hooks/client/loadArticles.jsx",
         include_str!("fixtures/paradigm-threat-files/hooks/client/loadArticles.jsx"),
     );
@@ -438,6 +443,11 @@ fn dirnav_expand_to_current_seeds_ancestors_and_active_file() {
     let (_val, vnode) = run_until_stable(DIRNAV_SRC, host);
 
     let blog = find_by_data_pt_path(&vnode, "blog").expect("blog folder node");
+    assert!(
+        vnode_text(blog).contains("blog"),
+        "folder label must render (path leaf fallback): {}",
+        vnode_text(blog)
+    );
     assert_eq!(data_pt_open(blog), Some("1"), "blog should be open after seed");
     let nested = find_by_data_pt_path(&vnode, "blog/nested").expect("nested folder");
     assert_eq!(

@@ -4,6 +4,7 @@ import { isCsrHost } from 'hooks/client/hostMode.jsx'
 import { dirExpandPaths } from '@relay/catalog'
 import { includes } from '@relay/util'
 import { propStr } from 'hooks/client/propOr.jsx'
+import { underscoresToSpaces } from 'hooks/client/strUtil.jsx'
 import { loadDirTree, rowPath, rowTitle, siteHref } from 'hooks/client/loadArticles.jsx'
 import FeelingLucky from 'hooks/client/components/FeelingLucky.jsx'
 import {
@@ -21,8 +22,34 @@ function stripRel(raw) {
 }
 
 function folderTitle(name) {
-  if (typeof name !== 'string') return ''
-  return name.replaceAll('_', ' ')
+  return underscoresToSpaces(name)
+}
+
+/** Path leaf after last `/` (CleverScript-safe; no split). */
+function pathLeaf(path) {
+  if (typeof path !== 'string' || path.length === 0) return ''
+  let leaf = path
+  let slash = 0 - 1
+  for (let i = 0; i < path.length; i++) {
+    if (path.charAt(i) === '/') {
+      slash = i
+    }
+  }
+  if (slash >= 0) {
+    leaf = path.slice(slash + 1)
+  }
+  return leaf
+}
+
+/** Prefer catalog `name`; fall back to path leaf when `.name` is empty/missing. */
+function folderLabel(node, path) {
+  let name = propStr(node, 'name', '')
+  if (name.length === 0) {
+    let p = path
+    if (p.length === 0) p = propStr(node, 'path', '')
+    name = pathLeaf(p)
+  }
+  return folderTitle(name)
 }
 
 function pathIsActive(folderPath, currentRel) {
@@ -110,17 +137,10 @@ function FolderBranch(props) {
   const expandPaths = props.expandPaths
   const onToggle = props.onToggle
   const currentRel = props.currentRel
-  let name = ''
-  let path = ''
+  const path = propStr(node, 'path', '')
   let count = 0
   let files = []
   let folders = []
-  try {
-    if (node && typeof node.name === 'string') name = node.name
-  } catch (e) {}
-  try {
-    if (node && typeof node.path === 'string') path = node.path
-  } catch (e2) {}
   try {
     if (node && typeof node.count === 'number') count = node.count
   } catch (e3) {}
@@ -130,6 +150,7 @@ function FolderBranch(props) {
   try {
     if (node && node.folders) folders = node.folders
   } catch (e5) {}
+  const label = folderLabel(node, path)
 
   const hasChildren = folders.length > 0 || files.length > 0
   const isExpand = pathListHas(expandPaths, path)
@@ -226,8 +247,8 @@ function FolderBranch(props) {
         ) : (
           <span className="pt-dir-chevron-spacer" aria-hidden="true" />
         )}
-        <a href={siteHref('/' + path + '/page.md')} className="pt-dir-folder-link">
-          <span className="pt-dir-folder-name">{folderTitle(name)}</span>
+        <a href={siteHref('/' + path + '/page.md')} className="pt-dir-folder-link" title={label}>
+          <span className="pt-dir-folder-name">{label}</span>
           {count > 0 ? <span className="pt-dir-count">{'(' + count + ')'}</span> : null}
         </a>
       </div>
